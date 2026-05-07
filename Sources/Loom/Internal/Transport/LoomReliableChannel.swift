@@ -41,6 +41,11 @@ package actor LoomReliableChannel: LoomSessionTransport {
     private var deliveryContinuation: AsyncStream<Data>.Continuation?
     private let deliveryStream: AsyncStream<Data>
 
+    private var handshakeDeliveryContinuation: AsyncStream<Data>.Continuation?
+    private let handshakeDeliveryStream: AsyncStream<Data>
+    private var routesReliablePacketsToHandshake = true
+    private var quarantinedHandshakePackets: Set<QuarantinedHandshakePacket> = []
+
     private var unreliableDeliveryContinuation: AsyncStream<Data>.Continuation?
     private let unreliableDeliveryStream: AsyncStream<Data>
 
@@ -77,6 +82,9 @@ package actor LoomReliableChannel: LoomSessionTransport {
         let (stream, continuation) = AsyncStream.makeStream(of: Data.self)
         deliveryStream = stream
         deliveryContinuation = continuation
+        let (hStream, hContinuation) = AsyncStream.makeStream(of: Data.self)
+        handshakeDeliveryStream = hStream
+        handshakeDeliveryContinuation = hContinuation
         let (uStream, uContinuation) = AsyncStream.makeStream(of: Data.self)
         unreliableDeliveryStream = uStream
         unreliableDeliveryContinuation = uContinuation
@@ -87,6 +95,7 @@ package actor LoomReliableChannel: LoomSessionTransport {
         receiveTask?.cancel()
         ackTask?.cancel()
         deliveryContinuation?.finish()
+        handshakeDeliveryContinuation?.finish()
         unreliableDeliveryContinuation?.finish()
     }
 
@@ -132,6 +141,18 @@ package actor LoomReliableChannel: LoomSessionTransport {
     }
 
     package func sendMessage(_ data: Data) async throws {
+        routesReliablePacketsToHandshake = false
+        try await sendReliableMessage(data)
+    }
+
+    package func sendHandshakeMessage(_ data: Data) async throws {
+        try await sendReliableMessage(data, additionalFlags: .hello)
+    }
+
+    private func sendReliableMessage(
+        _ data: Data,
+        additionalFlags: LoomReliablePacketFlags = []
+    ) async throws {
         guard !isClosed else {
             throw LoomError.protocolError("Reliable channel is closed.")
         }
@@ -139,8 +160,10 @@ package actor LoomReliableChannel: LoomSessionTransport {
         let fragmentPayload = loomReliableMaxFragmentPayload
         if data.count <= fragmentPayload {
             let seq = allocateSequence()
+            var flags: LoomReliablePacketFlags = .reliable
+            flags.formUnion(additionalFlags)
             let header = LoomReliablePacketHeader(
-                flags: .reliable,
+                flags: flags,
                 sequence: seq,
                 ackSequence: currentAckSequence(),
                 ackBitmap: currentAckBitmap(),
@@ -168,9 +191,11 @@ package actor LoomReliableChannel: LoomSessionTransport {
                 let end = min(start + fragmentPayload, data.count)
                 let chunk = data[start..<end]
                 let seq = allocateSequence()
+                var flags: LoomReliablePacketFlags = [.reliable, .fragment]
+                flags.formUnion(additionalFlags)
 
                 let header = LoomReliablePacketHeader(
-                    flags: [.reliable, .fragment],
+                    flags: flags,
                     sequence: seq,
                     ackSequence: currentAckSequence(),
                     ackBitmap: currentAckBitmap(),
@@ -193,10 +218,28 @@ package actor LoomReliableChannel: LoomSessionTransport {
     }
 
     package func receiveMessage(maxBytes: Int) async throws -> Data {
+        routesReliablePacketsToHandshake = false
         for await message in deliveryStream {
             if message.count > maxBytes {
                 throw LoomError.protocolError(
                     "Received message exceeds limit: \(message.count) > \(maxBytes)"
+                )
+            }
+            return message
+        }
+        if let terminalFailure {
+            throw LoomError.connectionFailed(terminalFailure)
+        }
+        throw LoomError.connectionFailed(
+            LoomConnectionFailure(reason: .cancelled, detail: "Reliable channel cancelled.")
+        )
+    }
+
+    package func receiveHandshakeMessage(maxBytes: Int) async throws -> Data {
+        for await message in handshakeDeliveryStream {
+            if message.count > maxBytes {
+                throw LoomError.protocolError(
+                    "Received handshake message exceeds limit: \(message.count) > \(maxBytes)"
                 )
             }
             return message
@@ -303,6 +346,8 @@ package actor LoomReliableChannel: LoomSessionTransport {
         ackTask?.cancel()
         deliveryContinuation?.finish()
         deliveryContinuation = nil
+        handshakeDeliveryContinuation?.finish()
+        handshakeDeliveryContinuation = nil
         unreliableDeliveryContinuation?.finish()
         unreliableDeliveryContinuation = nil
         connection.cancel()
@@ -589,6 +634,60 @@ package actor LoomReliableChannel: LoomSessionTransport {
             return
         }
 
+        if routesReliablePacketsToHandshake {
+            if header.flags.contains(.hello) {
+                recordReceivedSequence(header.sequence)
+                needsAck = true
+                if Self.shouldSendImmediateReliableAck(
+                    lastAckSentAt: lastDedicatedAckSentAt,
+                    now: now,
+                    idleThreshold: immediateAckIdleThreshold
+                ) {
+                    sendDedicatedAckIfNeeded(now: now)
+                } else {
+                    scheduleAckIfNeeded()
+                }
+            } else {
+                quarantinedHandshakePackets.insert(
+                    QuarantinedHandshakePacket(
+                        sequence: header.sequence,
+                        payload: payload
+                    )
+                )
+            }
+
+            if header.flags.contains(.fragment) {
+                handleFragment(header: header, payload: payload, routeToHandshake: true)
+            } else {
+                handshakeDeliveryContinuation?.yield(payload)
+            }
+            return
+        }
+
+        if quarantinedHandshakePackets.contains(
+            QuarantinedHandshakePacket(
+                sequence: header.sequence,
+                payload: payload
+            )
+        ) {
+            return
+        }
+
+        if header.flags.contains(.hello) {
+            recordReceivedSequence(header.sequence)
+            needsAck = true
+            if Self.shouldSendImmediateReliableAck(
+                lastAckSentAt: lastDedicatedAckSentAt,
+                now: now,
+                idleThreshold: immediateAckIdleThreshold
+            ) {
+                sendDedicatedAckIfNeeded(now: now)
+            } else {
+                scheduleAckIfNeeded()
+            }
+            return
+        }
+
         // Record this sequence for our outgoing acks
         recordReceivedSequence(header.sequence)
         needsAck = true
@@ -603,7 +702,7 @@ package actor LoomReliableChannel: LoomSessionTransport {
         }
 
         if header.flags.contains(.fragment) {
-            handleFragment(header: header, payload: payload)
+            handleFragment(header: header, payload: payload, routeToHandshake: false)
         } else {
             bufferForOrderedDelivery(
                 sequence: header.sequence,
@@ -668,8 +767,14 @@ package actor LoomReliableChannel: LoomSessionTransport {
         let firstSequence: UInt32
     }
 
+    private struct QuarantinedHandshakePacket: Hashable {
+        let sequence: UInt32
+        let payload: Data
+    }
+
     private struct FragmentAssembly {
         let fragmentCount: UInt16
+        let routeToHandshake: Bool
         var fragments: [UInt16: Data]
         let createdAt: CFAbsoluteTime
 
@@ -686,12 +791,17 @@ package actor LoomReliableChannel: LoomSessionTransport {
         }
     }
 
-    private func handleFragment(header: LoomReliablePacketHeader, payload: Data) {
+    private func handleFragment(
+        header: LoomReliablePacketHeader,
+        payload: Data,
+        routeToHandshake: Bool
+    ) {
         let firstSeq = header.sequence &- UInt32(header.fragmentIndex)
         let key = FragmentKey(streamID: header.streamID, firstSequence: firstSeq)
 
         var assembly = fragments[key] ?? FragmentAssembly(
             fragmentCount: header.fragmentCount,
+            routeToHandshake: routeToHandshake,
             fragments: [:],
             createdAt: CFAbsoluteTimeGetCurrent()
         )
@@ -699,11 +809,16 @@ package actor LoomReliableChannel: LoomSessionTransport {
         assembly.fragments[header.fragmentIndex] = payload
         if assembly.isComplete {
             fragments.removeValue(forKey: key)
-            bufferForOrderedDelivery(
-                sequence: firstSeq,
-                sequenceSpan: UInt32(header.fragmentCount),
-                payload: assembly.reassemble()
-            )
+            let reassembled = assembly.reassemble()
+            if assembly.routeToHandshake {
+                handshakeDeliveryContinuation?.yield(reassembled)
+            } else {
+                bufferForOrderedDelivery(
+                    sequence: firstSeq,
+                    sequenceSpan: UInt32(header.fragmentCount),
+                    payload: reassembled
+                )
+            }
         } else {
             fragments[key] = assembly
         }

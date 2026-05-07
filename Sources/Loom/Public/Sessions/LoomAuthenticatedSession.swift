@@ -382,13 +382,10 @@ public actor LoomAuthenticatedSession: LoomSessionProtocol {
                 )
             }
             let helloData = try JSONEncoder().encode(preparedHello.hello)
-            try await transport.sendMessage(helloData)
+            try await transport.sendHandshakeMessage(helloData)
             updateBootstrapProgress(phase: .localHelloSent)
 
-            let remoteHelloData = try await transport.receiveMessage(
-                maxBytes: LoomMessageLimits.maxHelloFrameBytes
-            )
-            let remoteHello = try decodeRemoteHello(from: remoteHelloData)
+            let remoteHello = try await receiveRemoteHello()
             let validatedHello = try await helloValidator.validateDetailed(
                 remoteHello,
                 endpointDescription: rawSession.endpoint.debugDescription
@@ -465,19 +462,34 @@ public actor LoomAuthenticatedSession: LoomSessionProtocol {
         }
     }
 
-    private func decodeRemoteHello(from data: Data) throws -> LoomSessionHello {
-        do {
-            return try JSONDecoder().decode(LoomSessionHello.self, from: data)
-        } catch {
-            if transportKind == .udp {
-                throw LoomError.connectionFailed(
-                    LoomConnectionFailure(
-                        reason: .transportLoss,
-                        detail: "Received malformed Loom session hello over UDP: \(error.localizedDescription)"
-                    )
+    private func receiveRemoteHello() async throws -> LoomSessionHello {
+        var malformedUDPCandidateCount = 0
+
+        while true {
+            let remoteHelloData = try await transport.receiveHandshakeMessage(
+                maxBytes: LoomMessageLimits.maxHelloFrameBytes
+            )
+            do {
+                return try JSONDecoder().decode(LoomSessionHello.self, from: remoteHelloData)
+            } catch {
+                guard transportKind == .udp else {
+                    throw LoomError.decodingError(error)
+                }
+
+                malformedUDPCandidateCount += 1
+                LoomLogger.transport(
+                    "Discarded malformed UDP session hello candidate " +
+                        "count=\(malformedUDPCandidateCount): \(error.localizedDescription)"
                 )
+                guard malformedUDPCandidateCount < 8 else {
+                    throw LoomError.connectionFailed(
+                        LoomConnectionFailure(
+                            reason: .transportLoss,
+                            detail: "Received too many malformed Loom session hello candidates over UDP: \(error.localizedDescription)"
+                        )
+                    )
+                }
             }
-            throw LoomError.decodingError(error)
         }
     }
 

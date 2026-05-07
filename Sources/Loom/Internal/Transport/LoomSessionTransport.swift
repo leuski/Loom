@@ -33,6 +33,12 @@ package protocol LoomSessionTransport: Sendable {
     /// Receive the next complete reliable message.
     func receiveMessage(maxBytes: Int) async throws -> Data
 
+    /// Send a pre-encryption handshake message.
+    func sendHandshakeMessage(_ data: Data) async throws
+
+    /// Receive the next pre-encryption handshake message candidate.
+    func receiveHandshakeMessage(maxBytes: Int) async throws -> Data
+
     /// Send a message without reliability guarantees (fire-and-forget, no retransmission).
     func sendUnreliable(_ data: Data) async throws
 

@@ -27,6 +27,14 @@ package actor LoomFramedConnection: LoomSessionTransport {
         try await readFrame(maxBytes: maxBytes)
     }
 
+    package func sendHandshakeMessage(_ data: Data) async throws {
+        try await sendMessage(data)
+    }
+
+    package func receiveHandshakeMessage(maxBytes: Int) async throws -> Data {
+        try await receiveMessage(maxBytes: maxBytes)
+    }
+
     package func sendUnreliable(_ data: Data) async throws {
         try await sendFrame(data)
     }

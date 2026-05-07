@@ -558,21 +558,126 @@ struct LoomAuthenticatedSessionTests {
     }
 
     @MainActor
-    @Test("Malformed UDP session hello is classified as transport loss")
-    func malformedUDPSessionHelloClassifiedAsTransportLoss() async throws {
+    @Test("UDP handshake ignores stale reliable payload before valid hello")
+    func udpHandshakeIgnoresStaleReliablePayloadBeforeValidHello() async throws {
+        let serverIdentityManager = LoomIdentityManager(
+            service: "com.ethanlipnik.loom.tests.udp-stale-server.\(UUID().uuidString)",
+            account: "p256-signing",
+            synchronizable: false
+        )
+        let serverHello = try LoomSessionHelloValidator.makeSignedHello(
+            from: LoomSessionHelloRequest(
+                deviceID: UUID(),
+                deviceName: "UDP Server",
+                deviceType: .mac,
+                advertisement: LoomPeerAdvertisement(deviceType: .mac)
+            ),
+            identityManager: serverIdentityManager
+        )
+        let serverHelloPayload = try JSONEncoder().encode(serverHello)
+        let trustedPayload = try JSONEncoder().encode(LoomHandshakeTrustStatus.trusted)
         let listener = try NWListener(using: .udp, on: .any)
         let readyPort = AsyncBox<UInt16>()
 
         listener.newConnectionHandler = { connection in
             connection.start(queue: .global(qos: .userInitiated))
             connection.receiveMessage { _, _, _, _ in
-                let payload = Data("not a signed Loom hello".utf8)
-                let header = LoomReliablePacketHeader(
+                sendReliableDatagram(
+                    Data("stale multiplexed stream payload".utf8),
+                    sequence: 7,
                     flags: .reliable,
-                    sequence: 0,
-                    payloadLength: UInt16(payload.count)
+                    over: connection
                 )
-                connection.send(content: header.serialize() + payload, completion: .idempotent)
+                sendReliableDatagram(
+                    serverHelloPayload,
+                    sequence: 0,
+                    flags: [.reliable, .hello],
+                    over: connection
+                )
+                Task {
+                    try? await Task.sleep(for: .milliseconds(100))
+                    sendReliableDatagram(
+                        trustedPayload,
+                        sequence: 1,
+                        flags: .reliable,
+                        over: connection
+                    )
+                }
+            }
+        }
+        listener.stateUpdateHandler = { state in
+            if case .ready = state, let port = listener.port?.rawValue {
+                Task {
+                    await readyPort.set(port)
+                }
+            }
+        }
+        listener.start(queue: .global(qos: .userInitiated))
+        defer {
+            listener.cancel()
+        }
+
+        let port = try #require(await readyPort.take())
+        let connection = NWConnection(
+            host: "127.0.0.1",
+            port: try #require(NWEndpoint.Port(rawValue: port)),
+            using: .udp
+        )
+        let session = LoomAuthenticatedSession(
+            rawSession: LoomSession(connection: connection),
+            role: .initiator,
+            transportKind: .udp
+        )
+        let progressObserver = await session.makeBootstrapProgressObserver()
+        defer {
+            Task {
+                await session.cancel()
+            }
+        }
+
+        let identityManager = LoomIdentityManager(
+            service: "com.ethanlipnik.loom.tests.udp-stale-client.\(UUID().uuidString)",
+            account: "p256-signing",
+            synchronizable: false
+        )
+        let hello = LoomSessionHelloRequest(
+            deviceID: UUID(),
+            deviceName: "UDP Client",
+            deviceType: .mac,
+            advertisement: LoomPeerAdvertisement(deviceType: .mac)
+        )
+
+        let context = try await session.start(
+            localHello: hello,
+            identityManager: identityManager
+        )
+        #expect(context.peerIdentity.name == "UDP Server")
+        #expect(context.transportKind == .udp)
+
+        let progress = await collectBootstrapProgress(
+            from: progressObserver,
+            throughFailure: true
+        )
+        #expect(progress.map(\.phase).contains(.ready))
+    }
+
+    @MainActor
+    @Test("Repeated malformed UDP session hello candidates fail as transport loss")
+    func repeatedMalformedUDPSessionHelloCandidatesFailAsTransportLoss() async throws {
+        let listener = try NWListener(using: .udp, on: .any)
+        let readyPort = AsyncBox<UInt16>()
+
+        listener.newConnectionHandler = { connection in
+            connection.start(queue: .global(qos: .userInitiated))
+            connection.receiveMessage { _, _, _, _ in
+                for index in 0..<8 {
+                    sendReliableDatagram(
+                        Data("not a signed Loom hello \(index)".utf8),
+                        sequence: UInt32(20 + index),
+                        flags: .reliable,
+                        over: connection
+                    )
+                }
             }
         }
         listener.stateUpdateHandler = { state in
@@ -622,11 +727,11 @@ struct LoomAuthenticatedSessionTests {
                 localHello: hello,
                 identityManager: identityManager
             )
-            Issue.record("Expected malformed UDP hello to fail.")
+            Issue.record("Expected repeated malformed UDP hello candidates to fail.")
         } catch let LoomError.connectionFailed(underlying) {
             let failure = LoomConnectionFailure.classify(underlying)
             #expect(failure.reason == .transportLoss)
-            #expect((failure.errorDescription ?? "").contains("malformed Loom session hello"))
+            #expect((failure.errorDescription ?? "").contains("too many malformed Loom session hello candidates"))
             let progress = await collectBootstrapProgress(
                 from: progressObserver,
                 throughFailure: true
@@ -979,6 +1084,20 @@ private func firstPayload(from stream: LoomMultiplexedStream) async -> Data? {
         return payload
     }
     return nil
+}
+
+private func sendReliableDatagram(
+    _ payload: Data,
+    sequence: UInt32,
+    flags: LoomReliablePacketFlags,
+    over connection: NWConnection
+) {
+    let header = LoomReliablePacketHeader(
+        flags: flags,
+        sequence: sequence,
+        payloadLength: UInt16(payload.count)
+    )
+    connection.send(content: header.serialize() + payload, completion: .idempotent)
 }
 
 @MainActor
