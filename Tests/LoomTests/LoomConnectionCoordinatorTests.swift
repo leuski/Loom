@@ -275,27 +275,18 @@ struct LoomConnectionCoordinatorTests {
     }
 
     @MainActor
-    @Test("Remote signaling fallback remains available when only overlay discovery succeeded")
-    func signalingFallbackIgnoresOverlayPresence() {
-        let overlayPeer = makeCoordinatorTestPeer(
-            name: "Overlay Host",
-            endpointHost: "overlay.internal",
-            tcpPort: 4600,
-            quicPort: nil
-        )
-
+    @Test("Remote signaling fallback remains available when no local peer was found")
+    func signalingFallbackRequiresMissingLocalPeer() {
         #expect(
             LoomConnectionCoordinator.signalingFallbackSessionID(
                 advertisedSignalingSessionID: "relay-session",
-                localPeer: nil,
-                overlayPeer: overlayPeer
+                localPeer: nil
             ) == "relay-session"
         )
         #expect(
             LoomConnectionCoordinator.signalingFallbackSessionID(
                 advertisedSignalingSessionID: "relay-session",
-                localPeer: makeCoordinatorTestPeer(),
-                overlayPeer: overlayPeer
+                localPeer: makeCoordinatorTestPeer()
             ) == nil
         )
     }

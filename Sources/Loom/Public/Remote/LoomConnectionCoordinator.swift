@@ -127,8 +127,7 @@ public final class LoomConnectionCoordinator {
 
     nonisolated package static func signalingFallbackSessionID(
         advertisedSignalingSessionID: String?,
-        localPeer: LoomPeer?,
-        overlayPeer _: LoomPeer?
+        localPeer: LoomPeer?
     ) -> String? {
         guard localPeer == nil else {
             return nil

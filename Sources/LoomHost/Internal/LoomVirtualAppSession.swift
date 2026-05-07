@@ -117,10 +117,7 @@ package actor LoomVirtualAppSession: LoomSessionProtocol {
         stream.finishInbound()
     }
 
-    package func handleStateChanged(
-        _ newState: LoomAuthenticatedSessionState,
-        errorMessage _: String?
-    ) {
+    package func handleStateChanged(_ newState: LoomAuthenticatedSessionState) {
         state = newState
         stateObservers.yield(newState)
         switch newState {

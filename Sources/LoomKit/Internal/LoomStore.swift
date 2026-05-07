@@ -369,8 +369,7 @@ actor LoomStore {
         let overlayPeer = localPeer == nil ? overlayPeersByID[resolvedPeer.id] : nil
         let signalingSessionID = LoomConnectionCoordinator.signalingFallbackSessionID(
             advertisedSignalingSessionID: resolvedPeer.signalingSessionID,
-            localPeer: localPeer,
-            overlayPeer: overlayPeer
+            localPeer: localPeer
         )
 
         guard localPeer != nil || overlayPeer != nil || signalingSessionID != nil else {
@@ -783,7 +782,6 @@ actor LoomStore {
             let session = try await connectionCoordinator.connect(
                 hello: hello,
                 localPeer: localPeer,
-                overlayPeer: overlayPeer,
                 signalingSessionID: signalingSessionID
             )
             let peerSnapshot = try await resolveConnectedPeer(

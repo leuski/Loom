@@ -119,7 +119,7 @@ public final class LoomDiscovery {
         browser?.browseResultsChangedHandler = { [weak self] results, changes in
             LoomLogger.discovery("Results changed: \(results.count) hosts, \(changes.count) changes")
             Task { @MainActor [weak self] in
-                self?.handleBrowseResults(results, changes: changes)
+                self?.handleBrowseResults(changes: changes)
             }
         }
 
@@ -202,7 +202,7 @@ public final class LoomDiscovery {
         }
     }
 
-    private func handleBrowseResults(_: Set<NWBrowser.Result>, changes: Set<NWBrowser.Result.Change>) {
+    private func handleBrowseResults(changes: Set<NWBrowser.Result.Change>) {
         for change in changes {
             switch change {
             case let .added(result):

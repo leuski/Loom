@@ -363,8 +363,7 @@ package actor LoomHostRuntime {
         let overlayPeer = localPeer == nil ? overlayPeersByID[peerID] : nil
         let signalingSessionID = LoomConnectionCoordinator.signalingFallbackSessionID(
             advertisedSignalingSessionID: resolvedPeer?.signalingSessionID,
-            localPeer: localPeer,
-            overlayPeer: overlayPeer
+            localPeer: localPeer
         )
 
         guard localPeer != nil || overlayPeer != nil || signalingSessionID != nil else {
@@ -378,7 +377,6 @@ package actor LoomHostRuntime {
         let session = try await dependencies.connectionCoordinator.connect(
             hello: hello,
             localPeer: localPeer,
-            overlayPeer: overlayPeer,
             signalingSessionID: signalingSessionID
         )
         let peer = try await resolveConnectedPeer(

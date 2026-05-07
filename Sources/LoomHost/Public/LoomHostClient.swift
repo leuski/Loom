@@ -76,7 +76,7 @@ public actor LoomHostClient {
         let liveSessions = Array(sessionsByConnectionID.values)
         sessionsByConnectionID.removeAll()
         for session in liveSessions {
-            await session.handleStateChanged(.cancelled, errorMessage: nil)
+            await session.handleStateChanged(.cancelled)
         }
         if let socket {
             await socket.close()
@@ -283,9 +283,9 @@ public actor LoomHostClient {
             let connection = makeConnection(from: descriptor)
             incomingConnectionBroadcaster.yield(connection)
 
-        case let .connectionStateChanged(connectionID, state, errorMessage):
+        case let .connectionStateChanged(connectionID, state, _):
             if let session = sessionsByConnectionID[connectionID] {
-                await session.handleStateChanged(state, errorMessage: errorMessage)
+                await session.handleStateChanged(state)
             }
             switch state {
             case .cancelled,
@@ -338,10 +338,7 @@ public actor LoomHostClient {
         let liveSessions = Array(sessionsByConnectionID.values)
         sessionsByConnectionID.removeAll()
         for session in liveSessions {
-            await session.handleStateChanged(
-                .failed("shared-host-broker-disconnected"),
-                errorMessage: "The shared-host broker disconnected."
-            )
+            await session.handleStateChanged(.failed("shared-host-broker-disconnected"))
         }
 
         if !isStarted {
