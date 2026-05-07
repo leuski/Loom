@@ -388,7 +388,7 @@ public actor LoomAuthenticatedSession: LoomSessionProtocol {
             let remoteHelloData = try await transport.receiveMessage(
                 maxBytes: LoomMessageLimits.maxHelloFrameBytes
             )
-            let remoteHello = try JSONDecoder().decode(LoomSessionHello.self, from: remoteHelloData)
+            let remoteHello = try decodeRemoteHello(from: remoteHelloData)
             let validatedHello = try await helloValidator.validateDetailed(
                 remoteHello,
                 endpointDescription: rawSession.endpoint.debugDescription
@@ -462,6 +462,22 @@ public actor LoomAuthenticatedSession: LoomSessionProtocol {
         } catch {
             updateBootstrapFailure(reason: error.localizedDescription)
             throw error
+        }
+    }
+
+    private func decodeRemoteHello(from data: Data) throws -> LoomSessionHello {
+        do {
+            return try JSONDecoder().decode(LoomSessionHello.self, from: data)
+        } catch {
+            if transportKind == .udp {
+                throw LoomError.connectionFailed(
+                    LoomConnectionFailure(
+                        reason: .transportLoss,
+                        detail: "Received malformed Loom session hello over UDP: \(error.localizedDescription)"
+                    )
+                )
+            }
+            throw LoomError.decodingError(error)
         }
     }
 

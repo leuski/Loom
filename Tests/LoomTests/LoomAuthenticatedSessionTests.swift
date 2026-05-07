@@ -153,8 +153,8 @@ struct LoomAuthenticatedSessionTests {
             }
         }
 
+        let observer = await pair.client.makeBootstrapProgressObserver()
         let clientProgressTask = Task<[LoomAuthenticatedSessionBootstrapProgress], Never> {
-            let observer = await pair.client.makeBootstrapProgressObserver()
             var events: [LoomAuthenticatedSessionBootstrapProgress] = []
             for await progress in observer {
                 if events.last != progress {
@@ -545,6 +545,88 @@ struct LoomAuthenticatedSessionTests {
             let failure = LoomConnectionFailure.classify(underlying)
             #expect(failure.reason == .timedOut)
             #expect((failure.errorDescription ?? "").contains("timed out"))
+            let progress = await collectBootstrapProgress(
+                from: progressObserver,
+                throughFailure: true
+            )
+            let lastProgress = try #require(progress.last)
+            #expect(lastProgress.failureReason != nil)
+            #expect(lastProgress.phase == .localHelloSent)
+        } catch {
+            Issue.record("Expected LoomError.connectionFailed, got \(error.localizedDescription).")
+        }
+    }
+
+    @MainActor
+    @Test("Malformed UDP session hello is classified as transport loss")
+    func malformedUDPSessionHelloClassifiedAsTransportLoss() async throws {
+        let listener = try NWListener(using: .udp, on: .any)
+        let readyPort = AsyncBox<UInt16>()
+
+        listener.newConnectionHandler = { connection in
+            connection.start(queue: .global(qos: .userInitiated))
+            connection.receiveMessage { _, _, _, _ in
+                let payload = Data("not a signed Loom hello".utf8)
+                let header = LoomReliablePacketHeader(
+                    flags: .reliable,
+                    sequence: 0,
+                    payloadLength: UInt16(payload.count)
+                )
+                connection.send(content: header.serialize() + payload, completion: .idempotent)
+            }
+        }
+        listener.stateUpdateHandler = { state in
+            if case .ready = state, let port = listener.port?.rawValue {
+                Task {
+                    await readyPort.set(port)
+                }
+            }
+        }
+        listener.start(queue: .global(qos: .userInitiated))
+        defer {
+            listener.cancel()
+        }
+
+        let port = try #require(await readyPort.take())
+        let connection = NWConnection(
+            host: "127.0.0.1",
+            port: try #require(NWEndpoint.Port(rawValue: port)),
+            using: .udp
+        )
+        let session = LoomAuthenticatedSession(
+            rawSession: LoomSession(connection: connection),
+            role: .initiator,
+            transportKind: .udp
+        )
+        let progressObserver = await session.makeBootstrapProgressObserver()
+        defer {
+            Task {
+                await session.cancel()
+            }
+        }
+
+        let identityManager = LoomIdentityManager(
+            service: "com.ethanlipnik.loom.tests.udp-malformed-hello.\(UUID().uuidString)",
+            account: "p256-signing",
+            synchronizable: false
+        )
+        let hello = LoomSessionHelloRequest(
+            deviceID: UUID(),
+            deviceName: "UDP Client",
+            deviceType: .mac,
+            advertisement: LoomPeerAdvertisement(deviceType: .mac)
+        )
+
+        do {
+            _ = try await session.start(
+                localHello: hello,
+                identityManager: identityManager
+            )
+            Issue.record("Expected malformed UDP hello to fail.")
+        } catch let LoomError.connectionFailed(underlying) {
+            let failure = LoomConnectionFailure.classify(underlying)
+            #expect(failure.reason == .transportLoss)
+            #expect((failure.errorDescription ?? "").contains("malformed Loom session hello"))
             let progress = await collectBootstrapProgress(
                 from: progressObserver,
                 throughFailure: true
