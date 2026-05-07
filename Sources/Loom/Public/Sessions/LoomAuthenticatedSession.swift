@@ -463,33 +463,21 @@ public actor LoomAuthenticatedSession: LoomSessionProtocol {
     }
 
     private func receiveRemoteHello() async throws -> LoomSessionHello {
-        var malformedUDPCandidateCount = 0
-
-        while true {
-            let remoteHelloData = try await transport.receiveHandshakeMessage(
-                maxBytes: LoomMessageLimits.maxHelloFrameBytes
-            )
-            do {
-                return try JSONDecoder().decode(LoomSessionHello.self, from: remoteHelloData)
-            } catch {
-                guard transportKind == .udp else {
-                    throw LoomError.decodingError(error)
-                }
-
-                malformedUDPCandidateCount += 1
-                LoomLogger.transport(
-                    "Discarded malformed UDP session hello candidate " +
-                        "count=\(malformedUDPCandidateCount): \(error.localizedDescription)"
-                )
-                guard malformedUDPCandidateCount < 8 else {
-                    throw LoomError.connectionFailed(
-                        LoomConnectionFailure(
-                            reason: .transportLoss,
-                            detail: "Received too many malformed Loom session hello candidates over UDP: \(error.localizedDescription)"
-                        )
-                    )
-                }
+        let remoteHelloData = try await transport.receiveHandshakeMessage(
+            maxBytes: LoomMessageLimits.maxHelloFrameBytes
+        )
+        do {
+            return try JSONDecoder().decode(LoomSessionHello.self, from: remoteHelloData)
+        } catch {
+            guard transportKind == .udp else {
+                throw LoomError.decodingError(error)
             }
+            throw LoomError.connectionFailed(
+                LoomConnectionFailure(
+                    reason: .transportLoss,
+                    detail: "Received malformed Loom session hello over UDP: \(error.localizedDescription)"
+                )
+            )
         }
     }
 

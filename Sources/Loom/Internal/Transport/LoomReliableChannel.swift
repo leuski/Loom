@@ -44,7 +44,6 @@ package actor LoomReliableChannel: LoomSessionTransport {
     private var handshakeDeliveryContinuation: AsyncStream<Data>.Continuation?
     private let handshakeDeliveryStream: AsyncStream<Data>
     private var routesReliablePacketsToHandshake = true
-    private var quarantinedHandshakePackets: Set<QuarantinedHandshakePacket> = []
 
     private var unreliableDeliveryContinuation: AsyncStream<Data>.Continuation?
     private let unreliableDeliveryStream: AsyncStream<Data>
@@ -635,25 +634,20 @@ package actor LoomReliableChannel: LoomSessionTransport {
         }
 
         if routesReliablePacketsToHandshake {
-            if header.flags.contains(.hello) {
-                recordReceivedSequence(header.sequence)
-                needsAck = true
-                if Self.shouldSendImmediateReliableAck(
-                    lastAckSentAt: lastDedicatedAckSentAt,
-                    now: now,
-                    idleThreshold: immediateAckIdleThreshold
-                ) {
-                    sendDedicatedAckIfNeeded(now: now)
-                } else {
-                    scheduleAckIfNeeded()
-                }
+            guard header.flags.contains(.hello) else {
+                return
+            }
+
+            recordReceivedSequence(header.sequence)
+            needsAck = true
+            if Self.shouldSendImmediateReliableAck(
+                lastAckSentAt: lastDedicatedAckSentAt,
+                now: now,
+                idleThreshold: immediateAckIdleThreshold
+            ) {
+                sendDedicatedAckIfNeeded(now: now)
             } else {
-                quarantinedHandshakePackets.insert(
-                    QuarantinedHandshakePacket(
-                        sequence: header.sequence,
-                        payload: payload
-                    )
-                )
+                scheduleAckIfNeeded()
             }
 
             if header.flags.contains(.fragment) {
@@ -661,15 +655,6 @@ package actor LoomReliableChannel: LoomSessionTransport {
             } else {
                 handshakeDeliveryContinuation?.yield(payload)
             }
-            return
-        }
-
-        if quarantinedHandshakePackets.contains(
-            QuarantinedHandshakePacket(
-                sequence: header.sequence,
-                payload: payload
-            )
-        ) {
             return
         }
 
@@ -765,11 +750,6 @@ package actor LoomReliableChannel: LoomSessionTransport {
     private struct FragmentKey: Hashable {
         let streamID: UInt16
         let firstSequence: UInt32
-    }
-
-    private struct QuarantinedHandshakePacket: Hashable {
-        let sequence: UInt32
-        let payload: Data
     }
 
     private struct FragmentAssembly {

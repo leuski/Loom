@@ -662,22 +662,20 @@ struct LoomAuthenticatedSessionTests {
     }
 
     @MainActor
-    @Test("Repeated malformed UDP session hello candidates fail as transport loss")
-    func repeatedMalformedUDPSessionHelloCandidatesFailAsTransportLoss() async throws {
+    @Test("Malformed UDP session hello fails as transport loss")
+    func malformedUDPSessionHelloFailsAsTransportLoss() async throws {
         let listener = try NWListener(using: .udp, on: .any)
         let readyPort = AsyncBox<UInt16>()
 
         listener.newConnectionHandler = { connection in
             connection.start(queue: .global(qos: .userInitiated))
             connection.receiveMessage { _, _, _, _ in
-                for index in 0..<8 {
-                    sendReliableDatagram(
-                        Data("not a signed Loom hello \(index)".utf8),
-                        sequence: UInt32(20 + index),
-                        flags: .reliable,
-                        over: connection
-                    )
-                }
+                sendReliableDatagram(
+                    Data("not a signed Loom hello".utf8),
+                    sequence: 0,
+                    flags: [.reliable, .hello],
+                    over: connection
+                )
             }
         }
         listener.stateUpdateHandler = { state in
@@ -727,11 +725,11 @@ struct LoomAuthenticatedSessionTests {
                 localHello: hello,
                 identityManager: identityManager
             )
-            Issue.record("Expected repeated malformed UDP hello candidates to fail.")
+            Issue.record("Expected malformed UDP hello to fail.")
         } catch let LoomError.connectionFailed(underlying) {
             let failure = LoomConnectionFailure.classify(underlying)
             #expect(failure.reason == .transportLoss)
-            #expect((failure.errorDescription ?? "").contains("too many malformed Loom session hello candidates"))
+            #expect((failure.errorDescription ?? "").contains("malformed Loom session hello"))
             let progress = await collectBootstrapProgress(
                 from: progressObserver,
                 throughFailure: true
