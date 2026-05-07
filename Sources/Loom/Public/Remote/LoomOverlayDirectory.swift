@@ -28,6 +28,9 @@ public final class LoomOverlayDirectory {
     private let configuration: LoomOverlayDirectoryConfiguration
     private var peersChangedObservers: [UUID: ([LoomPeer]) -> Void] = [:]
     private var refreshTask: Task<Void, Never>?
+    private var refreshProcessorTask: Task<Void, Never>?
+    private var requestedRefreshGeneration = 0
+    private var completedRefreshGeneration = 0
     private var lastPublishedPeerSnapshots: [PublishedPeerSnapshot] = []
 
     public init(
@@ -60,7 +63,7 @@ public final class LoomOverlayDirectory {
 
     /// Force an immediate seed refresh.
     public func refresh() async {
-        await refreshNow()
+        await requestRefresh()
     }
 
     /// Registers an observer that is invoked whenever discovered peers change.
@@ -77,30 +80,75 @@ public final class LoomOverlayDirectory {
     }
 
     private func runRefreshLoop() async {
-        await refreshNow()
+        await requestRefresh()
         while !Task.isCancelled {
             do {
                 try await Task.sleep(for: configuration.refreshInterval)
             } catch {
                 break
             }
-            await refreshNow()
+            await requestRefresh()
         }
     }
 
-    private func refreshNow() async {
+    private func requestRefresh() async {
+        requestedRefreshGeneration += 1
+        let targetGeneration = requestedRefreshGeneration
+        startRefreshProcessorIfNeeded()
+
+        while completedRefreshGeneration < targetGeneration {
+            guard let refreshProcessorTask else { return }
+            await refreshProcessorTask.value
+        }
+    }
+
+    private func startRefreshProcessorIfNeeded() {
+        guard refreshProcessorTask == nil else { return }
+
+        refreshProcessorTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            await self.runRefreshProcessor()
+        }
+    }
+
+    private func runRefreshProcessor() async {
+        defer {
+            refreshProcessorTask = nil
+            isSearching = refreshTask != nil
+        }
+
+        while completedRefreshGeneration < requestedRefreshGeneration {
+            let generation = requestedRefreshGeneration
+            await refreshNow(generation: generation)
+            completedRefreshGeneration = max(completedRefreshGeneration, generation)
+        }
+    }
+
+    private func refreshNow(generation: Int) async {
+        isSearching = true
         do {
             let seeds = try await configuration.seedProvider()
+            LoomLogger.debug(
+                .transport,
+                "Overlay directory refresh \(generation) started: seeds=\(seeds.count) attempts=\(configuration.probeAttempts)"
+            )
             let candidates = await Self.probeCandidates(
                 for: seeds,
                 configuration: configuration
             )
             publishDiscoveredPeers(resolvePeers(from: candidates))
             isSearching = refreshTask != nil
+            LoomLogger.debug(
+                .transport,
+                "Overlay directory refresh \(generation) completed: candidates=\(candidates.count) peers=\(discoveredPeers.count)"
+            )
         } catch {
             publishDiscoveredPeers([])
             isSearching = refreshTask != nil
-            LoomLogger.debug(.transport, "Overlay directory refresh failed: \(error.localizedDescription)")
+            LoomLogger.debug(
+                .transport,
+                "Overlay directory refresh \(generation) failed: \(error.localizedDescription)"
+            )
         }
     }
 
@@ -152,26 +200,7 @@ public final class LoomOverlayDirectory {
         await withTaskGroup(of: LoomOverlayDirectoryCandidate?.self) { group in
             for seed in seeds where seed.host.isEmpty == false {
                 group.addTask {
-                    do {
-                        let response = try await LoomOverlayProbeClient.probe(
-                            seed: seed,
-                            defaultPort: configuration.probePort,
-                            timeout: configuration.probeTimeout
-                        )
-                        guard let deviceID = response.advertisement.deviceID,
-                              !response.advertisement.directTransports.isEmpty else {
-                            return nil
-                        }
-                        return LoomOverlayDirectoryCandidate(
-                            deviceID: deviceID,
-                            host: seed.host,
-                            name: response.name,
-                            deviceType: response.deviceType,
-                            advertisement: response.advertisement
-                        )
-                    } catch {
-                        return nil
-                    }
+                    await probeCandidate(seed: seed, configuration: configuration)
                 }
             }
 
@@ -183,6 +212,59 @@ public final class LoomOverlayDirectory {
             }
             return candidates
         }
+    }
+
+    private static func probeCandidate(
+        seed: LoomOverlaySeed,
+        configuration: LoomOverlayDirectoryConfiguration
+    ) async -> LoomOverlayDirectoryCandidate? {
+        for attempt in 1...configuration.probeAttempts {
+            do {
+                let response = try await LoomOverlayProbeClient.probe(
+                    seed: seed,
+                    defaultPort: configuration.probePort,
+                    timeout: configuration.probeTimeout
+                )
+                guard let deviceID = response.advertisement.deviceID,
+                      !response.advertisement.directTransports.isEmpty else {
+                    LoomLogger.debug(
+                        .transport,
+                        "Overlay seed \(seed.host) ignored on attempt \(attempt): incomplete advertisement"
+                    )
+                    return nil
+                }
+                if attempt > 1 {
+                    LoomLogger.debug(.transport, "Overlay seed \(seed.host) succeeded on attempt \(attempt)")
+                }
+                return LoomOverlayDirectoryCandidate(
+                    deviceID: deviceID,
+                    host: seed.host,
+                    name: response.name,
+                    deviceType: response.deviceType,
+                    advertisement: response.advertisement
+                )
+            } catch {
+                if attempt >= configuration.probeAttempts {
+                    LoomLogger.debug(
+                        .transport,
+                        "Overlay seed \(seed.host) failed after \(attempt) attempt(s): \(error.localizedDescription)"
+                    )
+                    return nil
+                }
+
+                LoomLogger.debug(
+                    .transport,
+                    "Overlay seed \(seed.host) failed attempt \(attempt); retrying: \(error.localizedDescription)"
+                )
+                do {
+                    try await Task.sleep(for: configuration.probeRetryDelay)
+                } catch {
+                    return nil
+                }
+            }
+        }
+
+        return nil
     }
 
     private static func endpoint(

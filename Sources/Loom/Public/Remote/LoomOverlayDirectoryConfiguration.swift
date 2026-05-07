@@ -20,6 +20,10 @@ public struct LoomOverlayDirectoryConfiguration: Sendable {
     public let refreshInterval: Duration
     /// Per-seed timeout applied to the TCP probe.
     public let probeTimeout: Duration
+    /// Number of probe attempts made for each seed during one refresh.
+    public let probeAttempts: Int
+    /// Delay between retry attempts for a seed that did not respond.
+    public let probeRetryDelay: Duration
     package let usesDefaultProbePort: Bool
 
     public init(
@@ -28,10 +32,31 @@ public struct LoomOverlayDirectoryConfiguration: Sendable {
         probeTimeout: Duration = .seconds(2),
         seedProvider: @escaping SeedProvider
     ) {
+        self.init(
+            probePort: probePort,
+            refreshInterval: refreshInterval,
+            probeTimeout: probeTimeout,
+            probeAttempts: 1,
+            probeRetryDelay: .zero,
+            seedProvider: seedProvider
+        )
+    }
+
+    public init(
+        probePort: UInt16? = nil,
+        refreshInterval: Duration = .seconds(30),
+        probeTimeout: Duration = .seconds(2),
+        probeAttempts: Int,
+        probeRetryDelay: Duration = .zero,
+        seedProvider: @escaping SeedProvider
+    ) {
+        let usesDefaultProbePort = probePort == nil
         self.seedProvider = seedProvider
         self.probePort = probePort ?? Loom.defaultOverlayProbePort
         self.refreshInterval = refreshInterval
         self.probeTimeout = probeTimeout
-        self.usesDefaultProbePort = probePort == nil
+        self.probeAttempts = max(1, probeAttempts)
+        self.probeRetryDelay = probeRetryDelay
+        self.usesDefaultProbePort = usesDefaultProbePort
     }
 }

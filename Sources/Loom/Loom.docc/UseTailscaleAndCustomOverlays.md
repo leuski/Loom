@@ -27,6 +27,8 @@ let container = try LoomContainer(
         overlayDirectory: LoomOverlayDirectoryConfiguration(
             refreshInterval: .seconds(30),
             probeTimeout: .seconds(2),
+            probeAttempts: 3,
+            probeRetryDelay: .milliseconds(250),
             seedProvider: {
                 [
                     LoomOverlaySeed(host: "studio-mac.tailnet.example"),
@@ -37,6 +39,8 @@ let container = try LoomContainer(
     )
 )
 ```
+
+Use multiple probe attempts when the overlay interface may still be warming up after app launch or foregrounding. A single refresh still publishes one coherent peer set; retry attempts only make transient seed misses less visible to the caller.
 
 Use `LoomKitPortConfiguration` when a LoomKit app needs a different listener port:
 

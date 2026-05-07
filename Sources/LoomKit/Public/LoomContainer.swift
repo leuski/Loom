@@ -208,6 +208,8 @@ public final class LoomContainer {
             probePort: ports.overlayProbePort,
             refreshInterval: overlayDirectory.refreshInterval,
             probeTimeout: overlayDirectory.probeTimeout,
+            probeAttempts: overlayDirectory.probeAttempts,
+            probeRetryDelay: overlayDirectory.probeRetryDelay,
             seedProvider: overlayDirectory.seedProvider
         )
     }

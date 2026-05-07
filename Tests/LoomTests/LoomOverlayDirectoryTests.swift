@@ -104,6 +104,92 @@ struct LoomOverlayDirectoryTests {
         await secondServer.stop()
     }
 
+    @MainActor
+    @Test("Overlay directory retries transient seed probe failures within one refresh")
+    func directoryRetriesTransientSeedProbeFailuresWithinOneRefresh() async throws {
+        let response = LoomOverlayProbeResponse(
+            name: "Retry Host",
+            deviceType: .mac,
+            advertisement: LoomPeerAdvertisement(
+                deviceID: UUID(uuidString: "00000000-0000-0000-0000-000000000041"),
+                deviceType: .mac,
+                directTransports: [
+                    LoomDirectTransportAdvertisement(transportKind: .tcp, port: 41041),
+                ]
+            )
+        )
+        let payload = FlakyOverlayProbePayload(response: response)
+        let (server, port) = try await startOverlayProbeServer {
+            try await payload.nextResponse()
+        }
+        let directory = LoomOverlayDirectory(
+            configuration: LoomOverlayDirectoryConfiguration(
+                refreshInterval: .seconds(3600),
+                probeTimeout: .seconds(2),
+                probeAttempts: 2,
+                probeRetryDelay: .milliseconds(10),
+                seedProvider: {
+                    [LoomOverlaySeed(host: "127.0.0.1", probePort: port)]
+                }
+            )
+        )
+
+        await directory.refresh()
+
+        #expect(directory.discoveredPeers.map { $0.name } == ["Retry Host"])
+        #expect(await payload.callCount() == 2)
+        await server.stop()
+    }
+
+    @MainActor
+    @Test("Overlay directory queues overlapping refreshes so later success is not cleared by an earlier miss")
+    func directoryQueuesOverlappingRefreshesUntilLaterSuccessPublishes() async throws {
+        let response = LoomOverlayProbeResponse(
+            name: "Queued Host",
+            deviceType: .mac,
+            advertisement: LoomPeerAdvertisement(
+                deviceID: UUID(uuidString: "00000000-0000-0000-0000-000000000042"),
+                deviceType: .mac,
+                directTransports: [
+                    LoomDirectTransportAdvertisement(transportKind: .tcp, port: 41042),
+                ]
+            )
+        )
+        let (server, port) = try await startOverlayProbeServer(response: response)
+        let blackhole = try await startBlackholeTCPServer()
+        let blackholePort = try #require(blackhole.port?.rawValue)
+        let seedState = LoomOverlaySeedState(
+            seeds: [LoomOverlaySeed(host: "127.0.0.1", probePort: blackholePort)]
+        )
+        let directory = LoomOverlayDirectory(
+            configuration: LoomOverlayDirectoryConfiguration(
+                refreshInterval: .seconds(3600),
+                probeTimeout: .milliseconds(150),
+                seedProvider: {
+                    await seedState.currentSeeds()
+                }
+            )
+        )
+
+        let firstRefresh = Task { @MainActor in
+            await directory.refresh()
+        }
+        try await Task.sleep(for: .milliseconds(25))
+        await seedState.setSeeds([
+            LoomOverlaySeed(host: "127.0.0.1", probePort: port),
+        ])
+        let secondRefresh = Task { @MainActor in
+            await directory.refresh()
+        }
+
+        await firstRefresh.value
+        await secondRefresh.value
+
+        #expect(directory.discoveredPeers.map(\.name) == ["Queued Host"])
+        blackhole.cancel()
+        await server.stop()
+    }
+
     @Test("Overlay probe timeout cancels stalled connection")
     func probeTimeoutCancelsStalledConnection() async throws {
         let listener = try await startBlackholeTCPServer()
@@ -390,17 +476,45 @@ private actor ThrowingLoomOverlaySeedState {
 
 private struct OverlaySeedProviderFailure: Error, Sendable {}
 
+private actor FlakyOverlayProbePayload {
+    private let response: LoomOverlayProbeResponse
+    private var calls = 0
+
+    init(response: LoomOverlayProbeResponse) {
+        self.response = response
+    }
+
+    func nextResponse() throws -> LoomOverlayProbeResponse {
+        calls += 1
+        if calls == 1 {
+            throw LoomError.protocolError("Synthetic first probe failure.")
+        }
+        return response
+    }
+
+    func callCount() -> Int {
+        calls
+    }
+}
+
 private func startOverlayProbeServer(
     response: LoomOverlayProbeResponse
+) async throws -> (LoomOverlayProbeServer, UInt16) {
+    try await startOverlayProbeServer {
+        response
+    }
+}
+
+private func startOverlayProbeServer(
+    payloadProvider: @escaping @Sendable () async throws -> LoomOverlayProbeResponse
 ) async throws -> (LoomOverlayProbeServer, UInt16) {
     var lastError: Error?
 
     for _ in 0..<16 {
         let server = LoomOverlayProbeServer(
-            port: UInt16.random(in: 20000...60000)
-        ) {
-            response
-        }
+            port: UInt16.random(in: 20000...60000),
+            payloadProvider: payloadProvider
+        )
         do {
             let port = try await server.start()
             return (server, port)
