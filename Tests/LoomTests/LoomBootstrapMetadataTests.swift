@@ -8,6 +8,7 @@
 //
 
 @testable import Loom
+import Darwin
 import Foundation
 import NIOSSH
 import Testing
@@ -91,6 +92,40 @@ struct LoomBootstrapMetadataTests {
         } catch {
             Issue.record("Expected LoomWakeOnLANError, got \(error.localizedDescription).")
         }
+    }
+
+    @Test("Wake-on-LAN parses IPv4 broadcast targets")
+    func wakeOnLANParsesIPv4BroadcastTargets() throws {
+        let address = try LoomDefaultWakeOnLANClient.ipv4Address(for: "192.168.1.255")
+        let octets = withUnsafeBytes(of: address.s_addr) { Array($0) }
+
+        #expect(octets == [192, 168, 1, 255])
+    }
+
+    @Test("Wake-on-LAN rejects invalid IPv4 broadcast targets")
+    func wakeOnLANRejectsInvalidIPv4BroadcastTargets() {
+        do {
+            _ = try LoomDefaultWakeOnLANClient.ipv4Address(for: "host.local")
+            Issue.record("Expected invalid IPv4 broadcast target rejection.")
+        } catch let error as LoomWakeOnLANError {
+            switch error {
+            case let .sendFailed(detail):
+                #expect(detail.contains("invalid IPv4 broadcast target"))
+            default:
+                Issue.record("Expected sendFailed, got \(error.localizedDescription).")
+            }
+        } catch {
+            Issue.record("Expected LoomWakeOnLANError, got \(error.localizedDescription).")
+        }
+    }
+
+    @Test("Wake-on-LAN permission denied detail explains broadcast permission")
+    func wakeOnLANPermissionDeniedDetailExplainsBroadcastPermission() {
+        let detail = LoomDefaultWakeOnLANClient.sendFailureDetail(for: POSIXError(.EACCES))
+
+        #expect(detail.contains("permission denied sending UDP broadcast"))
+        #expect(detail.contains("Local Network access"))
+        #expect(detail.contains("multicast networking entitlement"))
     }
 
     @Test("Bootstrap endpoint resolution order and dedupe")

@@ -38,7 +38,7 @@ Apps distributed through the App Store or using App Sandbox need an additional e
 com.apple.developer.networking.multicast
 ```
 
-Request this entitlement through your Apple Developer account. Without it, Bonjour discovery may be blocked on end-user devices even if the Info.plist keys are correct.
+Request this entitlement through your Apple Developer account. Without it, Bonjour discovery and UDP broadcast features such as Wake-on-LAN may be blocked on iOS, iPadOS, and visionOS devices even if the Info.plist keys are correct.
 
 ## Resetting Permissions During Development
 

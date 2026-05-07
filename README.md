@@ -291,7 +291,7 @@ Add both of these to your app target's Info.plist, replacing the service type wi
 <string>This app uses the local network to discover and connect to nearby devices.</string>
 ```
 
-For App Store distribution, you also need the `com.apple.developer.networking.multicast` entitlement. Request it through your Apple Developer account.
+For App Store distribution, you also need the `com.apple.developer.networking.multicast` entitlement for Bonjour and UDP broadcast features such as Wake-on-LAN. Request it through your Apple Developer account.
 
 In debug builds, Loom asserts on missing keys at startup so you see a clear message instead of the opaque system error. See the [Configure Local Network Access](https://ethanlipnik.github.io/Loom/documentation/loom/configurelocalnetworkaccess) documentation article for more detail, including how to reset permissions during development.
 

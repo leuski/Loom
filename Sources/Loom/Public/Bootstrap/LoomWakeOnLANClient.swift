@@ -8,7 +8,7 @@
 //
 
 import Foundation
-import Network
+import Darwin
 
 /// Wake-on-LAN failures.
 public enum LoomWakeOnLANError: LocalizedError, Sendable {
@@ -47,6 +47,8 @@ public protocol LoomWakeOnLANClient: Sendable {
 
 /// Default Wake-on-LAN sender used by bootstrap coordinators.
 public final class LoomDefaultWakeOnLANClient: LoomWakeOnLANClient {
+    private static let wakeOnLANPort: UInt16 = 9
+
     /// Creates the default UDP-based Wake-on-LAN sender.
     public init() {}
 
@@ -91,7 +93,11 @@ public final class LoomDefaultWakeOnLANClient: LoomWakeOnLANClient {
             }
         }
 
-        let detail = lastError.map { String(describing: $0) } ?? "unknown send error"
+        if let wakeOnLANError = lastError as? LoomWakeOnLANError {
+            throw wakeOnLANError
+        }
+
+        let detail = lastError.map(Self.sendFailureDetail) ?? "unknown send error"
         throw LoomWakeOnLANError.sendFailed(detail)
     }
 
@@ -99,29 +105,102 @@ public final class LoomDefaultWakeOnLANClient: LoomWakeOnLANClient {
         try await withThrowingTaskGroup(of: Void.self) { group in
             for target in targets {
                 group.addTask {
-                    let port = NWEndpoint.Port(rawValue: 9) ?? .any
-                    let host = NWEndpoint.Host(target)
-                    let connection = NWConnection(
-                        host: host,
-                        port: port,
-                        using: .udp
-                    )
-                    connection.start(queue: .global(qos: .utility))
-                    defer { connection.cancel() }
-
-                    try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
-                        connection.send(content: packet, completion: .contentProcessed { error in
-                            if let error {
-                                continuation.resume(throwing: error)
-                            } else {
-                                continuation.resume()
-                            }
-                        })
-                    }
+                    let address = try Self.ipv4Address(for: target)
+                    try Self.send(packet: packet, to: address)
                 }
             }
             try await group.waitForAll()
         }
+    }
+
+    static func ipv4Address(for target: String) throws -> in_addr {
+        var address = in_addr()
+        let result = target.withCString { inet_pton(AF_INET, $0, &address) }
+        if result == 1 {
+            return address
+        }
+        if result == 0 {
+            throw LoomWakeOnLANError.sendFailed("invalid IPv4 broadcast target \(target)")
+        }
+        throw POSIXError(Self.currentPOSIXErrorCode())
+    }
+
+    static func sendFailureDetail(for error: Error) -> String {
+        if let code = posixCode(from: error) {
+            switch code {
+            case .EACCES:
+                return "permission denied sending UDP broadcast; allow Local Network access and make sure the app is signed with the multicast networking entitlement on iOS, iPadOS, and visionOS"
+            default:
+                return "\(code): \(String(cString: strerror(code.rawValue)))"
+            }
+        }
+
+        return String(describing: error)
+    }
+
+    private static func send(packet: Data, to address: in_addr) throws {
+        let socketDescriptor = Darwin.socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP)
+        guard socketDescriptor >= 0 else {
+            throw POSIXError(currentPOSIXErrorCode())
+        }
+        defer { Darwin.close(socketDescriptor) }
+
+        var allowBroadcast: Int32 = 1
+        guard Darwin.setsockopt(
+            socketDescriptor,
+            SOL_SOCKET,
+            SO_BROADCAST,
+            &allowBroadcast,
+            socklen_t(MemoryLayout.size(ofValue: allowBroadcast))
+        ) == 0 else {
+            throw POSIXError(currentPOSIXErrorCode())
+        }
+
+        var destination = sockaddr_in()
+        destination.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
+        destination.sin_family = sa_family_t(AF_INET)
+        destination.sin_port = in_port_t(wakeOnLANPort).bigEndian
+        destination.sin_addr = address
+
+        let bytesSent = packet.withUnsafeBytes { buffer -> ssize_t in
+            guard let baseAddress = buffer.baseAddress else { return -1 }
+            return withUnsafePointer(to: destination) { destinationPointer in
+                destinationPointer.withMemoryRebound(to: sockaddr.self, capacity: 1) { socketAddress in
+                    Darwin.sendto(
+                        socketDescriptor,
+                        baseAddress,
+                        buffer.count,
+                        0,
+                        socketAddress,
+                        socklen_t(MemoryLayout<sockaddr_in>.size)
+                    )
+                }
+            }
+        }
+
+        guard bytesSent >= 0 else {
+            throw POSIXError(currentPOSIXErrorCode())
+        }
+        guard bytesSent == packet.count else {
+            throw LoomWakeOnLANError.sendFailed("sent \(bytesSent) of \(packet.count) Wake-on-LAN bytes")
+        }
+    }
+
+    private static func posixCode(from error: Error) -> POSIXErrorCode? {
+        if let posixError = error as? POSIXError {
+            return posixError.code
+        }
+
+        let nsError = error as NSError
+        if nsError.domain == NSPOSIXErrorDomain {
+            return POSIXErrorCode(rawValue: Int32(nsError.code))
+        }
+
+        return nil
+    }
+
+    private static func currentPOSIXErrorCode() -> POSIXErrorCode {
+        POSIXErrorCode(rawValue: errno) ?? .EIO
     }
 
     /// Builds a standard Wake-on-LAN magic packet for a MAC address.
