@@ -98,6 +98,7 @@ public final class LoomMultiplexedStream: @unchecked Sendable, Hashable {
 
     private let lock = NSLock()
     private var continuation: AsyncStream<Data>.Continuation?
+    private var incomingByteBatchDispatcher: LoomIncomingByteBatchDispatcher?
     private let sendHandler: @Sendable (Data) async throws -> Void
     private let unreliableSendHandler: @Sendable (Data) async throws -> Void
     private let queuedUnreliableSendHandler:
@@ -174,6 +175,64 @@ public final class LoomMultiplexedStream: @unchecked Sendable, Hashable {
         await queuedUnreliableResetHandler(profile)
     }
 
+    /// Installs an exclusive batched inbound payload handler for high-rate streams.
+    ///
+    /// When a batch handler is installed, newly received payloads are delivered
+    /// to the handler instead of `incomingBytes`. This keeps existing stream
+    /// consumers source-compatible while allowing media pipelines to avoid a
+    /// per-payload `AsyncStream` resume on hot paths.
+    public func setIncomingBytesBatchHandler(
+        maxBatchSize: Int = 32,
+        maxDelay: Duration = .milliseconds(1),
+        handler: @escaping @Sendable ([Data]) async -> Void
+    ) {
+        let dispatcher = LoomIncomingByteBatchDispatcher(
+            maxBatchSize: maxBatchSize,
+            maxDelay: maxDelay,
+            handler: handler
+        )
+
+        lock.lock()
+        let previousDispatcher = incomingByteBatchDispatcher
+        incomingByteBatchDispatcher = dispatcher
+        lock.unlock()
+
+        previousDispatcher?.finish()
+    }
+
+    /// Installs an exclusive synchronous inbound payload handler for hot media streams.
+    ///
+    /// Unlike `setIncomingBytesBatchHandler`, this handler runs on the receive
+    /// delivery path and does not hop through an `AsyncStream` worker task. It
+    /// flushes when `maxBatchSize` is reached or when the handler is cleared.
+    /// Keep the handler lightweight and hand work off to a stream-owned queue.
+    public func setIncomingBytesImmediateBatchHandler(
+        maxBatchSize: Int = 32,
+        handler: @escaping @Sendable ([Data]) -> Void
+    ) {
+        let dispatcher = LoomIncomingByteBatchDispatcher(
+            maxBatchSize: maxBatchSize,
+            immediateHandler: handler
+        )
+
+        lock.lock()
+        let previousDispatcher = incomingByteBatchDispatcher
+        incomingByteBatchDispatcher = dispatcher
+        lock.unlock()
+
+        previousDispatcher?.finish()
+    }
+
+    /// Removes any installed batched inbound payload handler.
+    public func clearIncomingBytesBatchHandler() {
+        lock.lock()
+        let dispatcher = incomingByteBatchDispatcher
+        incomingByteBatchDispatcher = nil
+        lock.unlock()
+
+        dispatcher?.finish()
+    }
+
     public func close() async throws {
         try await closeHandler()
         finishQueuedOutbound()
@@ -190,16 +249,25 @@ public final class LoomMultiplexedStream: @unchecked Sendable, Hashable {
 
     package func yield(_ data: Data) {
         lock.lock()
+        let dispatcher = incomingByteBatchDispatcher
         let continuation = continuation
         lock.unlock()
-        continuation?.yield(data)
+
+        if let dispatcher {
+            dispatcher.yield(data)
+        } else {
+            continuation?.yield(data)
+        }
     }
 
     package func finishInbound() {
         lock.lock()
         let continuation = continuation
         self.continuation = nil
+        let dispatcher = incomingByteBatchDispatcher
+        incomingByteBatchDispatcher = nil
         lock.unlock()
+        dispatcher?.finish()
         continuation?.finish()
     }
 

@@ -298,6 +298,278 @@ struct LoomAuthenticatedSessionTests {
     }
 
     @MainActor
+    @Test("Batched stream handler preserves queued unreliable payload order")
+    func batchedStreamHandlerPreservesQueuedUnreliablePayloadOrder() async throws {
+        let pair = try await makeLoopbackPair()
+        defer {
+            Task {
+                await pair.stop()
+            }
+        }
+
+        async let clientContext = pair.client.start(
+            localHello: pair.clientHello,
+            identityManager: pair.clientIdentityManager
+        )
+        async let serverContext = pair.server.start(
+            localHello: pair.serverHello,
+            identityManager: pair.serverIdentityManager,
+            trustProvider: pair.serverTrustProvider
+        )
+        _ = try await (clientContext, serverContext)
+
+        let incomingStreamTask = Task<LoomMultiplexedStream?, Never> {
+            for await stream in pair.server.incomingStreams {
+                return stream
+            }
+            return nil
+        }
+
+        let mediaStream = try await pair.client.openStream(label: "video/batched")
+        let serverMediaStream = try #require(await incomingStreamTask.value)
+        let collector = BatchedPayloadCollector(targetCount: 12)
+        serverMediaStream.setIncomingBytesBatchHandler(
+            maxBatchSize: 4,
+            maxDelay: .milliseconds(25)
+        ) { batch in
+            await collector.append(batch)
+        }
+
+        let expectedPayloads = (0 ..< 12).map { Data("batched-media-\($0)".utf8) }
+        for payload in expectedPayloads {
+            mediaStream.sendUnreliableQueued(payload)
+        }
+
+        let receivedPayloads = try #require(await collector.payloads(timeoutSeconds: 2.0))
+        #expect(receivedPayloads == expectedPayloads)
+        try await mediaStream.close()
+    }
+
+    @MainActor
+    @Test("Batched stream handler flushes partial batch before close")
+    func batchedStreamHandlerFlushesPartialBatchBeforeClose() async throws {
+        let pair = try await makeLoopbackPair()
+        defer {
+            Task {
+                await pair.stop()
+            }
+        }
+
+        async let clientContext = pair.client.start(
+            localHello: pair.clientHello,
+            identityManager: pair.clientIdentityManager
+        )
+        async let serverContext = pair.server.start(
+            localHello: pair.serverHello,
+            identityManager: pair.serverIdentityManager,
+            trustProvider: pair.serverTrustProvider
+        )
+        _ = try await (clientContext, serverContext)
+
+        let incomingStreamTask = Task<LoomMultiplexedStream?, Never> {
+            for await stream in pair.server.incomingStreams {
+                return stream
+            }
+            return nil
+        }
+
+        let mediaStream = try await pair.client.openStream(label: "video/batched-partial")
+        let serverMediaStream = try #require(await incomingStreamTask.value)
+        let collector = BatchedPayloadCollector(targetCount: 3)
+        serverMediaStream.setIncomingBytesBatchHandler(
+            maxBatchSize: 16,
+            maxDelay: .seconds(5)
+        ) { batch in
+            await collector.append(batch)
+        }
+
+        let expectedPayloads = (0 ..< 3).map { Data("partial-batch-\($0)".utf8) }
+        for payload in expectedPayloads {
+            try await mediaStream.sendUnreliable(payload)
+        }
+        try await mediaStream.close()
+
+        let receivedPayloads = try #require(await collector.payloads(timeoutSeconds: 2.0))
+        #expect(receivedPayloads == expectedPayloads)
+    }
+
+    @MainActor
+    @Test("Batched stream handler can deliver immediately without timer flush")
+    func batchedStreamHandlerCanDeliverImmediatelyWithoutTimerFlush() async throws {
+        let pair = try await makeLoopbackPair()
+        defer {
+            Task {
+                await pair.stop()
+            }
+        }
+
+        async let clientContext = pair.client.start(
+            localHello: pair.clientHello,
+            identityManager: pair.clientIdentityManager
+        )
+        async let serverContext = pair.server.start(
+            localHello: pair.serverHello,
+            identityManager: pair.serverIdentityManager,
+            trustProvider: pair.serverTrustProvider
+        )
+        _ = try await (clientContext, serverContext)
+
+        let incomingStreamTask = Task<LoomMultiplexedStream?, Never> {
+            for await stream in pair.server.incomingStreams {
+                return stream
+            }
+            return nil
+        }
+
+        let mediaStream = try await pair.client.openStream(label: "video/batched-immediate")
+        let serverMediaStream = try #require(await incomingStreamTask.value)
+        let collector = BatchedPayloadCollector(targetCount: 1)
+        serverMediaStream.setIncomingBytesBatchHandler(
+            maxBatchSize: 16,
+            maxDelay: .zero
+        ) { batch in
+            await collector.append(batch)
+        }
+
+        let payload = Data("immediate-batch".utf8)
+        try await mediaStream.sendUnreliable(payload)
+
+        let receivedPayloads = try #require(await collector.payloads(timeoutSeconds: 0.25))
+        #expect(receivedPayloads == [payload])
+        try await mediaStream.close()
+    }
+
+    @MainActor
+    @Test("Immediate batch handler honors max batch size and preserves order")
+    func immediateBatchHandlerHonorsMaxBatchSizeAndPreservesOrder() async throws {
+        let pair = try await makeLoopbackPair()
+        defer {
+            Task {
+                await pair.stop()
+            }
+        }
+
+        async let clientContext = pair.client.start(
+            localHello: pair.clientHello,
+            identityManager: pair.clientIdentityManager
+        )
+        async let serverContext = pair.server.start(
+            localHello: pair.serverHello,
+            identityManager: pair.serverIdentityManager,
+            trustProvider: pair.serverTrustProvider
+        )
+        _ = try await (clientContext, serverContext)
+
+        let incomingStreamTask = Task<LoomMultiplexedStream?, Never> {
+            for await stream in pair.server.incomingStreams {
+                return stream
+            }
+            return nil
+        }
+
+        let mediaStream = try await pair.client.openStream(label: "video/immediate-batch")
+        let serverMediaStream = try #require(await incomingStreamTask.value)
+        let collector = SynchronousBatchedPayloadCollector(targetCount: 8)
+        serverMediaStream.setIncomingBytesImmediateBatchHandler(maxBatchSize: 4) { batch in
+            collector.append(batch)
+        }
+
+        let expectedPayloads = (0 ..< 8).map { Data("immediate-media-\($0)".utf8) }
+        for payload in expectedPayloads {
+            try await mediaStream.sendUnreliable(payload)
+        }
+
+        let receivedPayloads = try #require(await collector.payloads(timeoutSeconds: 0.5))
+        #expect(receivedPayloads == expectedPayloads)
+        #expect(collector.maxBatchSizeSnapshot() <= 4)
+        try await mediaStream.close()
+    }
+
+    @MainActor
+    @Test("Immediate batch handler flushes before stream close")
+    func immediateBatchHandlerFlushesBeforeStreamClose() async throws {
+        let pair = try await makeLoopbackPair()
+        defer {
+            Task {
+                await pair.stop()
+            }
+        }
+
+        async let clientContext = pair.client.start(
+            localHello: pair.clientHello,
+            identityManager: pair.clientIdentityManager
+        )
+        async let serverContext = pair.server.start(
+            localHello: pair.serverHello,
+            identityManager: pair.serverIdentityManager,
+            trustProvider: pair.serverTrustProvider
+        )
+        _ = try await (clientContext, serverContext)
+
+        let incomingStreamTask = Task<LoomMultiplexedStream?, Never> {
+            for await stream in pair.server.incomingStreams {
+                return stream
+            }
+            return nil
+        }
+
+        let mediaStream = try await pair.client.openStream(label: "video/immediate-close")
+        let serverMediaStream = try #require(await incomingStreamTask.value)
+        let collector = SynchronousBatchedPayloadCollector(targetCount: 3)
+        serverMediaStream.setIncomingBytesImmediateBatchHandler(maxBatchSize: 16) { batch in
+            collector.append(batch)
+        }
+
+        let expectedPayloads = (0 ..< 3).map { Data("immediate-close-\($0)".utf8) }
+        for payload in expectedPayloads {
+            try await mediaStream.sendUnreliable(payload)
+        }
+        try await mediaStream.close()
+
+        let receivedPayloads = try #require(await collector.payloads(timeoutSeconds: 0.5))
+        #expect(receivedPayloads == expectedPayloads)
+    }
+
+    @Test("Batch dispatcher finish prevents late scheduled flush callbacks")
+    func batchDispatcherFinishPreventsLateScheduledFlushCallbacks() async throws {
+        let collector = BatchedPayloadCollector(targetCount: 1)
+        let dispatcher = LoomIncomingByteBatchDispatcher(
+            maxBatchSize: 16,
+            maxDelay: .milliseconds(100)
+        ) { batch in
+            await collector.append(batch)
+        }
+
+        let deliveredPayload = Data("finish-flush".utf8)
+        dispatcher.yield(deliveredPayload)
+        dispatcher.finish()
+        dispatcher.yield(Data("after-finish".utf8))
+
+        let receivedPayloads = try #require(await collector.payloads(timeoutSeconds: 0.5))
+        #expect(receivedPayloads == [deliveredPayload])
+        try await Task.sleep(for: .milliseconds(150))
+        #expect(await collector.payloadSnapshot() == [deliveredPayload])
+    }
+
+    @Test("Immediate batch dispatcher honors max batch size")
+    func immediateBatchDispatcherHonorsMaxBatchSize() async throws {
+        let collector = SynchronousBatchedPayloadCollector(targetCount: 8)
+        let dispatcher = LoomIncomingByteBatchDispatcher(maxBatchSize: 4) { batch in
+            collector.append(batch)
+        }
+
+        let expectedPayloads = (0 ..< 8).map { Data("direct-immediate-\($0)".utf8) }
+        for payload in expectedPayloads {
+            dispatcher.yield(payload)
+        }
+
+        let receivedPayloads = try #require(await collector.payloads(timeoutSeconds: 0.5))
+        #expect(receivedPayloads == expectedPayloads)
+        #expect(collector.maxBatchSizeSnapshot() == 4)
+        dispatcher.finish()
+    }
+
+    @MainActor
     @Test("TCP authenticated sessions ignore late queued payloads after a stream closes")
     func tcpSessionIgnoresLateQueuedPayloadsAfterClose() async throws {
         let pair = try await makeLoopbackPair()
@@ -1227,6 +1499,81 @@ private actor AsyncBox<Value: Sendable> {
             try? await Task.sleep(for: .milliseconds(10))
         }
         return value
+    }
+}
+
+private actor BatchedPayloadCollector {
+    private let targetCount: Int
+    private var payloads: [Data] = []
+
+    init(targetCount: Int) {
+        self.targetCount = targetCount
+    }
+
+    func append(_ batch: [Data]) {
+        payloads.append(contentsOf: batch)
+    }
+
+    func payloads(timeoutSeconds: TimeInterval) async -> [Data]? {
+        let deadline = CFAbsoluteTimeGetCurrent() + timeoutSeconds
+        while payloads.count < targetCount, CFAbsoluteTimeGetCurrent() < deadline {
+            try? await Task.sleep(for: .milliseconds(10))
+        }
+        guard payloads.count >= targetCount else { return nil }
+        return Array(payloads.prefix(targetCount))
+    }
+
+    func payloadSnapshot() -> [Data] {
+        payloads
+    }
+}
+
+private final class SynchronousBatchedPayloadCollector: @unchecked Sendable {
+    private let lock = NSLock()
+    private let targetCount: Int
+    private var payloads: [Data] = []
+    private var maxBatchSize = 0
+
+    init(targetCount: Int) {
+        self.targetCount = targetCount
+    }
+
+    func append(_ batch: [Data]) {
+        lock.lock()
+        payloads.append(contentsOf: batch)
+        maxBatchSize = max(maxBatchSize, batch.count)
+        lock.unlock()
+    }
+
+    func payloads(timeoutSeconds: TimeInterval) async -> [Data]? {
+        let deadline = CFAbsoluteTimeGetCurrent() + timeoutSeconds
+        while payloadCountSnapshot() < targetCount, CFAbsoluteTimeGetCurrent() < deadline {
+            try? await Task.sleep(for: .milliseconds(10))
+        }
+        let snapshot = payloadSnapshot()
+        guard snapshot.count >= targetCount else { return nil }
+        return Array(snapshot.prefix(targetCount))
+    }
+
+    func maxBatchSizeSnapshot() -> Int {
+        lock.lock()
+        let value = maxBatchSize
+        lock.unlock()
+        return value
+    }
+
+    private func payloadCountSnapshot() -> Int {
+        lock.lock()
+        let count = payloads.count
+        lock.unlock()
+        return count
+    }
+
+    private func payloadSnapshot() -> [Data] {
+        lock.lock()
+        let snapshot = payloads
+        lock.unlock()
+        return snapshot
     }
 }
 
