@@ -119,6 +119,45 @@ struct LoomOrderedUnreliableSendQueueTests {
         queue.close()
     }
 
+    @Test("Priority sequenced realtime queue keeps short FIFO input window")
+    func prioritySequencedRealtimeQueueKeepsShortFIFOInputWindow() async throws {
+        let limits = LoomOrderedUnreliableSendQueue.limits(for: .priorityInputRealtimeSequenced)
+        let recorder = LockedSendRecorder()
+        let droppedPayloads = LockedDataRecorder()
+        let queue = LoomOrderedUnreliableSendQueue(
+            queue: DispatchQueue(label: "loom.tests.queue.priority-input-sequenced"),
+            maxOutstandingPackets: 1,
+            maxOutstandingBytes: limits.maxOutstandingBytes,
+            maxQueuedPackets: 2,
+            replacesQueuedSends: limits.replacesQueuedSends,
+            sendOperation: { data, completion in
+                recorder.record(data: data, completion: completion)
+            }
+        )
+
+        queue.enqueue(Data([1])) { _ in }
+        queue.enqueue(Data([2])) { error in
+            if error != nil { droppedPayloads.record(Data([2])) }
+        }
+        queue.enqueue(Data([3])) { error in
+            if error != nil { droppedPayloads.record(Data([3])) }
+        }
+        queue.enqueue(Data([4])) { error in
+            if error != nil { droppedPayloads.record(Data([4])) }
+        }
+
+        try await waitForRecordedPayloads(recorder, expected: [Data([1])])
+        try await waitForDroppedPayloads(droppedPayloads, expected: [Data([2])])
+
+        recorder.completeNext(error: nil)
+        try await waitForRecordedPayloads(recorder, expected: [Data([1]), Data([3])])
+
+        recorder.completeNext(error: nil)
+        try await waitForRecordedPayloads(recorder, expected: [Data([1]), Data([3]), Data([4])])
+
+        queue.close()
+    }
+
     private func waitForCounter(
         _ counter: LockedCounter,
         expected: Int,
@@ -147,6 +186,21 @@ struct LoomOrderedUnreliableSendQueueTests {
             try await Task.sleep(for: .milliseconds(10))
         }
         Issue.record("Timed out waiting for recorded payloads; saw \(recorder.recordedPayloads)")
+    }
+
+    private func waitForDroppedPayloads(
+        _ recorder: LockedDataRecorder,
+        expected: [Data],
+        timeout: Duration = .seconds(2)
+    ) async throws {
+        let deadline = ContinuousClock.now + timeout
+        while ContinuousClock.now < deadline {
+            if recorder.recordedPayloads == expected {
+                return
+            }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        Issue.record("Timed out waiting for dropped payloads; saw \(recorder.recordedPayloads)")
     }
 }
 
@@ -194,6 +248,23 @@ private final class LockedSendRecorder: @unchecked Sendable {
         let completion = completionStorage.isEmpty ? nil : completionStorage.removeFirst()
         lock.unlock()
         completion?(error)
+    }
+}
+
+private final class LockedDataRecorder: @unchecked Sendable {
+    private let lock = NSLock()
+    private var payloadStorage: [Data] = []
+
+    var recordedPayloads: [Data] {
+        lock.lock()
+        defer { lock.unlock() }
+        return payloadStorage
+    }
+
+    func record(_ payload: Data) {
+        lock.lock()
+        payloadStorage.append(payload)
+        lock.unlock()
     }
 }
 

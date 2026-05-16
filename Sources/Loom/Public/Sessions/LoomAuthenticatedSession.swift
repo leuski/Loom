@@ -47,8 +47,9 @@ public struct LoomAuthenticatedSessionContext: Sendable, Codable, Equatable {
 ///
 /// Use ``interactiveMedia`` for latency-sensitive media where small transport
 /// buffers help prevent stale packets from accumulating. Use
-/// ``priorityInputRealtime`` and ``priorityInputProtected`` for first-class
-/// input lanes that must not sit behind media stream traffic. Use
+/// ``priorityInputRealtime``, ``priorityInputRealtimeSequenced``, and
+/// ``priorityInputProtected`` for first-class input lanes that must not sit
+/// behind media stream traffic. Use
 /// ``throughputProbe`` when you need to intentionally overdrive a path and
 /// observe where loss begins, such as an explicit network-capacity test.
 public enum LoomQueuedUnreliableSendProfile: String, Sendable, Codable, CaseIterable {
@@ -56,6 +57,8 @@ public enum LoomQueuedUnreliableSendProfile: String, Sendable, Codable, CaseIter
     case interactiveMedia
     /// Keeps only the newest pending input payload when the transport is busy.
     case priorityInputRealtime
+    /// Preserves a short FIFO window of realtime input while bounding stale backlog.
+    case priorityInputRealtimeSequenced
     /// Preserves protected input ordering with a shallow independent queue.
     case priorityInputProtected
     /// Allows a much deeper queue so throughput probes can saturate fast paths.
@@ -77,6 +80,11 @@ public enum LoomQueuedUnreliableSendProfile: String, Sendable, Codable, CaseIter
             LoomQueuedUnreliableSendLimits(
                 maxOutstandingPackets: 1,
                 maxOutstandingBytes: 64 * 1024
+            )
+        case .priorityInputRealtimeSequenced:
+            LoomQueuedUnreliableSendLimits(
+                maxOutstandingPackets: 8,
+                maxOutstandingBytes: 128 * 1024
             )
         case .priorityInputProtected:
             LoomQueuedUnreliableSendLimits(

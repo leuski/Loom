@@ -13,6 +13,7 @@ package final class LoomOrderedUnreliableSendQueue: @unchecked Sendable {
     package struct Limits: Sendable, Equatable {
         let maxOutstandingPackets: Int
         let maxOutstandingBytes: Int
+        let maxQueuedPackets: Int?
         let replacesQueuedSends: Bool
     }
 
@@ -30,6 +31,7 @@ package final class LoomOrderedUnreliableSendQueue: @unchecked Sendable {
     private let sendOperation: @Sendable (Data, @escaping @Sendable (NWError?) -> Void) -> Void
     private let maxOutstandingPackets: Int
     private let maxOutstandingBytes: Int
+    private let maxQueuedPackets: Int?
     private let replacesQueuedSends: Bool
     private var isClosed = false
     private var pendingSends: [PendingSend] = []
@@ -41,6 +43,7 @@ package final class LoomOrderedUnreliableSendQueue: @unchecked Sendable {
         return Limits(
             maxOutstandingPackets: recommendedLimits.maxOutstandingPackets,
             maxOutstandingBytes: recommendedLimits.maxOutstandingBytes,
+            maxQueuedPackets: profile == .priorityInputRealtimeSequenced ? 8 : nil,
             replacesQueuedSends: profile == .priorityInputRealtime
         )
     }
@@ -50,11 +53,13 @@ package final class LoomOrderedUnreliableSendQueue: @unchecked Sendable {
         queue: DispatchQueue,
         maxOutstandingPackets: Int = defaultMaxOutstandingPackets,
         maxOutstandingBytes: Int = defaultMaxOutstandingBytes,
+        maxQueuedPackets: Int? = nil,
         replacesQueuedSends: Bool = false
     ) {
         self.queue = queue
         self.maxOutstandingPackets = max(1, maxOutstandingPackets)
         self.maxOutstandingBytes = max(1, maxOutstandingBytes)
+        self.maxQueuedPackets = maxQueuedPackets.map { max(0, $0) }
         self.replacesQueuedSends = replacesQueuedSends
         sendOperation = { [connection] data, onComplete in
             connection.send(content: data, completion: .contentProcessed { error in
@@ -67,12 +72,14 @@ package final class LoomOrderedUnreliableSendQueue: @unchecked Sendable {
         queue: DispatchQueue,
         maxOutstandingPackets: Int = defaultMaxOutstandingPackets,
         maxOutstandingBytes: Int = defaultMaxOutstandingBytes,
+        maxQueuedPackets: Int? = nil,
         replacesQueuedSends: Bool = false,
         sendOperation: @escaping @Sendable (Data, @escaping @Sendable (NWError?) -> Void) -> Void
     ) {
         self.queue = queue
         self.maxOutstandingPackets = max(1, maxOutstandingPackets)
         self.maxOutstandingBytes = max(1, maxOutstandingBytes)
+        self.maxQueuedPackets = maxQueuedPackets.map { max(0, $0) }
         self.replacesQueuedSends = replacesQueuedSends
         self.sendOperation = sendOperation
     }
@@ -89,6 +96,7 @@ package final class LoomOrderedUnreliableSendQueue: @unchecked Sendable {
                 droppedSends.forEach { $0.onComplete(.posix(.ECANCELED)) }
             }
             pendingSends.append(PendingSend(data: data, onComplete: onComplete))
+            trimQueuedSendsIfNeeded()
             drainIfPossible()
         }
     }
@@ -100,6 +108,14 @@ package final class LoomOrderedUnreliableSendQueue: @unchecked Sendable {
             let droppedSends = pendingSends
             pendingSends.removeAll(keepingCapacity: false)
             droppedSends.forEach { $0.onComplete(.posix(.ECANCELED)) }
+        }
+    }
+
+    private func trimQueuedSendsIfNeeded() {
+        guard let maxQueuedPackets else { return }
+        while pendingSends.count > maxQueuedPackets {
+            let droppedSend = pendingSends.removeFirst()
+            droppedSend.onComplete(.posix(.ECANCELED))
         }
     }
 

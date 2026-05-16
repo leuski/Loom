@@ -90,6 +90,7 @@ package actor LoomFramedConnection: LoomSessionTransport {
             ),
             maxOutstandingPackets: limits.maxOutstandingPackets,
             maxOutstandingBytes: limits.maxOutstandingBytes,
+            maxQueuedPackets: limits.maxQueuedPackets,
             replacesQueuedSends: limits.replacesQueuedSends
         )
         queuedUnreliableSenders[profile] = sender

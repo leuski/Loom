@@ -11,9 +11,9 @@ import Foundation
 ///
 /// Priority input payloads are encrypted with their own traffic class and are
 /// delivered outside the normal multiplexed stream receive actor. Realtime
-/// sends keep only the newest pending payload, while protected sends preserve a
-/// shallow independent queue so applications can layer acknowledgements and
-/// fallback behavior on top.
+/// sends keep only the newest pending payload, sequenced realtime sends preserve
+/// a short FIFO window, and protected sends preserve a shallow independent queue
+/// so applications can layer acknowledgements and fallback behavior on top.
 public final class LoomPriorityInputEndpoint: @unchecked Sendable {
     public static let maximumPayloadBytes = 1 * 1024 * 1024
 
@@ -40,6 +40,16 @@ public final class LoomPriorityInputEndpoint: @unchecked Sendable {
         onComplete: @escaping @Sendable (Error?) -> Void = { _ in }
     ) {
         send(payload, profile: .priorityInputRealtime, onComplete: onComplete)
+    }
+
+    /// Send realtime input that should preserve short-term motion continuity.
+    /// If the transport is backpressured, older queued samples are dropped only
+    /// after a bounded FIFO window fills.
+    public func sendRealtimeSequenced(
+        _ payload: Data,
+        onComplete: @escaping @Sendable (Error?) -> Void = { _ in }
+    ) {
+        send(payload, profile: .priorityInputRealtimeSequenced, onComplete: onComplete)
     }
 
     /// Send protected input on the priority lane. The application should pair
