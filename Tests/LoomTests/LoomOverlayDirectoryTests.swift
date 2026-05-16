@@ -436,21 +436,95 @@ struct LoomOverlayDirectoryTests {
 
         await server.stop()
     }
+
+    @MainActor
+    @Test("Overlay directory pause preserves peers and defers refresh")
+    func directoryPausePreservesPeersAndDefersRefresh() async throws {
+        let firstResponse = LoomOverlayProbeResponse(
+            name: "Alpha",
+            deviceType: .mac,
+            advertisement: LoomPeerAdvertisement(
+                deviceID: UUID(uuidString: "00000000-0000-0000-0000-000000000051"),
+                deviceType: .mac,
+                directTransports: [
+                    LoomDirectTransportAdvertisement(transportKind: .tcp, port: 41051),
+                ]
+            )
+        )
+        let secondResponse = LoomOverlayProbeResponse(
+            name: "Beta",
+            deviceType: .mac,
+            advertisement: LoomPeerAdvertisement(
+                deviceID: UUID(uuidString: "00000000-0000-0000-0000-000000000052"),
+                deviceType: .mac,
+                directTransports: [
+                    LoomDirectTransportAdvertisement(transportKind: .tcp, port: 41052),
+                ]
+            )
+        )
+        let (firstServer, firstPort) = try await startOverlayProbeServer(response: firstResponse)
+        let (secondServer, secondPort) = try await startOverlayProbeServer(response: secondResponse)
+        let seedState = LoomOverlaySeedState(
+            seeds: [LoomOverlaySeed(host: "127.0.0.1", probePort: firstPort)]
+        )
+        let directory = LoomOverlayDirectory(
+            configuration: LoomOverlayDirectoryConfiguration(
+                refreshInterval: .seconds(3600),
+                probeTimeout: .seconds(2),
+                seedProvider: {
+                    await seedState.currentSeeds()
+                }
+            )
+        )
+
+        do {
+            await directory.refresh()
+            #expect(directory.discoveredPeers.map(\.name) == ["Alpha"])
+            let callCountBeforePause = await seedState.callCount()
+
+            directory.pauseRefreshes()
+            await seedState.setSeeds([
+                LoomOverlaySeed(host: "127.0.0.1", probePort: secondPort),
+            ])
+            await directory.refresh()
+
+            #expect(directory.isRefreshPaused)
+            #expect(!directory.isSearching)
+            #expect(await seedState.callCount() == callCountBeforePause)
+            #expect(directory.discoveredPeers.map(\.name) == ["Alpha"])
+
+            directory.resumeRefreshes()
+            try await waitForOverlayPeers(directory, names: ["Beta"])
+        } catch {
+            await firstServer.stop()
+            await secondServer.stop()
+            throw error
+        }
+
+        await firstServer.stop()
+        await secondServer.stop()
+    }
 }
 
 private actor LoomOverlaySeedState {
     private var seeds: [LoomOverlaySeed]
+    private var calls = 0
 
     init(seeds: [LoomOverlaySeed]) {
         self.seeds = seeds
     }
 
     func currentSeeds() -> [LoomOverlaySeed] {
-        seeds
+        calls += 1
+        return seeds
     }
 
     func setSeeds(_ seeds: [LoomOverlaySeed]) {
         self.seeds = seeds
+    }
+
+    func callCount() -> Int {
+        calls
     }
 }
 
@@ -562,6 +636,22 @@ private func endpointPort(_ endpoint: NWEndpoint) -> UInt16? {
         return nil
     }
     return port.rawValue
+}
+
+@MainActor
+private func waitForOverlayPeers(
+    _ directory: LoomOverlayDirectory,
+    names: [String],
+    timeout: Duration = .seconds(2)
+) async throws {
+    let deadline = ContinuousClock.now + timeout
+    while ContinuousClock.now < deadline {
+        if directory.discoveredPeers.map(\.name) == names {
+            return
+        }
+        try await Task.sleep(for: .milliseconds(10))
+    }
+    #expect(directory.discoveredPeers.map(\.name) == names)
 }
 
 private final class TestContinuationBox<T: Sendable>: @unchecked Sendable {

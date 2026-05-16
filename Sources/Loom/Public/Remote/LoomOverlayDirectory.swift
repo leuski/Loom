@@ -19,6 +19,9 @@ public final class LoomOverlayDirectory {
     /// Whether the directory is actively refreshing seeds.
     public private(set) var isSearching = false
 
+    /// Whether refresh requests are currently paused while preserving discovered peers.
+    public private(set) var isRefreshPaused = false
+
     /// Optional local device identifier used to filter self from directory output.
     public var localDeviceID: UUID?
 
@@ -46,7 +49,7 @@ public final class LoomOverlayDirectory {
         guard refreshTask == nil else {
             return
         }
-        isSearching = true
+        isSearching = !isRefreshPaused
         refreshTask = Task { [weak self] in
             guard let self else { return }
             await self.runRefreshLoop()
@@ -59,6 +62,27 @@ public final class LoomOverlayDirectory {
         refreshTask = nil
         isSearching = false
         publishDiscoveredPeers([])
+    }
+
+    /// Pause periodic and manual refresh work without clearing discovered peers.
+    public func pauseRefreshes() {
+        guard !isRefreshPaused else { return }
+        isRefreshPaused = true
+        refreshProcessorTask?.cancel()
+        refreshProcessorTask = nil
+        completedRefreshGeneration = requestedRefreshGeneration
+        isSearching = false
+    }
+
+    /// Resume refresh work and optionally perform one coalesced refresh.
+    public func resumeRefreshes(performRefresh: Bool = true) {
+        guard isRefreshPaused else { return }
+        isRefreshPaused = false
+        isSearching = refreshTask != nil
+        guard performRefresh else { return }
+        Task { @MainActor [weak self] in
+            await self?.requestRefresh()
+        }
     }
 
     /// Force an immediate seed refresh.
@@ -92,6 +116,7 @@ public final class LoomOverlayDirectory {
     }
 
     private func requestRefresh() async {
+        guard !isRefreshPaused else { return }
         requestedRefreshGeneration += 1
         let targetGeneration = requestedRefreshGeneration
         startRefreshProcessorIfNeeded()
@@ -114,10 +139,10 @@ public final class LoomOverlayDirectory {
     private func runRefreshProcessor() async {
         defer {
             refreshProcessorTask = nil
-            isSearching = refreshTask != nil
+            isSearching = refreshTask != nil && !isRefreshPaused
         }
 
-        while completedRefreshGeneration < requestedRefreshGeneration {
+        while completedRefreshGeneration < requestedRefreshGeneration, !Task.isCancelled, !isRefreshPaused {
             let generation = requestedRefreshGeneration
             await refreshNow(generation: generation)
             completedRefreshGeneration = max(completedRefreshGeneration, generation)
@@ -125,9 +150,11 @@ public final class LoomOverlayDirectory {
     }
 
     private func refreshNow(generation: Int) async {
+        guard !isRefreshPaused else { return }
         isSearching = true
         do {
             let seeds = try await configuration.seedProvider()
+            guard !Task.isCancelled, !isRefreshPaused else { return }
             LoomLogger.debug(
                 .transport,
                 "Overlay directory refresh \(generation) started: seeds=\(seeds.count) attempts=\(configuration.probeAttempts)"
@@ -136,15 +163,17 @@ public final class LoomOverlayDirectory {
                 for: seeds,
                 configuration: configuration
             )
+            guard !Task.isCancelled, !isRefreshPaused else { return }
             publishDiscoveredPeers(resolvePeers(from: candidates))
-            isSearching = refreshTask != nil
+            isSearching = refreshTask != nil && !isRefreshPaused
             LoomLogger.debug(
                 .transport,
                 "Overlay directory refresh \(generation) completed: candidates=\(candidates.count) peers=\(discoveredPeers.count)"
             )
         } catch {
+            guard !Task.isCancelled, !isRefreshPaused else { return }
             publishDiscoveredPeers([])
-            isSearching = refreshTask != nil
+            isSearching = refreshTask != nil && !isRefreshPaused
             LoomLogger.debug(
                 .transport,
                 "Overlay directory refresh \(generation) failed: \(error.localizedDescription)"
