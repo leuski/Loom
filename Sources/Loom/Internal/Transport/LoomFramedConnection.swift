@@ -64,6 +64,10 @@ package actor LoomFramedConnection: LoomSessionTransport {
         try await readFrame(maxBytes: maxBytes)
     }
 
+    package func receivePriorityUnreliable(maxBytes: Int) async throws -> Data {
+        throw LoomError.protocolError("Priority unreliable receive is only available on UDP transports.")
+    }
+
     package func cancelPendingUnreliableSends() async {
         for sender in queuedUnreliableSenders.values {
             sender.close()
@@ -85,7 +89,8 @@ package actor LoomFramedConnection: LoomSessionTransport {
                 qos: .userInteractive
             ),
             maxOutstandingPackets: limits.maxOutstandingPackets,
-            maxOutstandingBytes: limits.maxOutstandingBytes
+            maxOutstandingBytes: limits.maxOutstandingBytes,
+            replacesQueuedSends: limits.replacesQueuedSends
         )
         queuedUnreliableSenders[profile] = sender
         return sender

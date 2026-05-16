@@ -551,6 +551,24 @@ struct LoomAuthenticatedSessionTests {
         #expect(await collector.payloadSnapshot() == [deliveredPayload])
     }
 
+    @Test("Batch dispatcher flushes partial batch after max delay")
+    func batchDispatcherFlushesPartialBatchAfterMaxDelay() async throws {
+        let collector = BatchedPayloadCollector(targetCount: 1)
+        let dispatcher = LoomIncomingByteBatchDispatcher(
+            maxBatchSize: 16,
+            maxDelay: .milliseconds(10)
+        ) { batch in
+            await collector.append(batch)
+        }
+
+        let payload = Data("timed-partial-flush".utf8)
+        dispatcher.yield(payload)
+
+        let receivedPayloads = try #require(await collector.payloads(timeoutSeconds: 0.5))
+        #expect(receivedPayloads == [payload])
+        dispatcher.finish()
+    }
+
     @Test("Immediate batch dispatcher honors max batch size")
     func immediateBatchDispatcherHonorsMaxBatchSize() async throws {
         let collector = SynchronousBatchedPayloadCollector(targetCount: 8)

@@ -62,6 +62,10 @@ package protocol LoomSessionTransport: Sendable {
     /// Receive the next unreliable message.
     func receiveUnreliable(maxBytes: Int) async throws -> Data
 
+    /// Receive the next priority unreliable message, when the transport exposes
+    /// an independent lane.
+    func receivePriorityUnreliable(maxBytes: Int) async throws -> Data
+
     /// Cancel any pending queued unreliable sends that have not yet been
     /// submitted to the underlying connection.
     func cancelPendingUnreliableSends() async

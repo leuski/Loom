@@ -103,7 +103,7 @@ final class LoomIncomingByteBatchDispatcher: @unchecked Sendable {
 
     private func scheduleFlushLocked() {
         guard flushTask == nil else { return }
-        flushTask = Task { [weak self, maxDelay] in
+        flushTask = Task.detached(priority: .userInitiated) { [weak self, maxDelay] in
             do {
                 try await Task.sleep(for: maxDelay)
             } catch {

@@ -11,6 +11,7 @@ import Foundation
 package enum LoomSessionTrafficClass: UInt8, Sendable {
     case control = 1
     case data = 2
+    case priorityInput = 3
 }
 
 package enum LoomSessionSecurityError: LocalizedError, Sendable {
@@ -32,6 +33,8 @@ package struct LoomSessionSecurityContext: Sendable {
     private let controlReceiveKey: SymmetricKey
     private let dataSendKey: SymmetricKey
     private let dataReceiveKey: SymmetricKey
+    private let priorityInputSendKey: SymmetricKey
+    private let priorityInputReceiveKey: SymmetricKey
 
     private static let nonceSize = 12
     private static let authTagSize = 16
@@ -78,6 +81,20 @@ package struct LoomSessionSecurityContext: Sendable {
             sharedSecret: sharedSecret,
             salt: salt,
             label: role == .initiator ? "loom-session-data-receiver-v1" : "loom-session-data-initiator-v1"
+        )
+        priorityInputSendKey = Self.deriveKey(
+            sharedSecret: sharedSecret,
+            salt: salt,
+            label: role == .initiator
+                ? "loom-session-priority-input-initiator-v1"
+                : "loom-session-priority-input-receiver-v1"
+        )
+        priorityInputReceiveKey = Self.deriveKey(
+            sharedSecret: sharedSecret,
+            salt: salt,
+            label: role == .initiator
+                ? "loom-session-priority-input-receiver-v1"
+                : "loom-session-priority-input-initiator-v1"
         )
     }
 
@@ -135,6 +152,7 @@ package struct LoomSessionSecurityContext: Sendable {
         switch trafficClass {
         case .control: controlSendKey
         case .data: dataSendKey
+        case .priorityInput: priorityInputSendKey
         }
     }
 
@@ -142,6 +160,7 @@ package struct LoomSessionSecurityContext: Sendable {
         switch trafficClass {
         case .control: controlReceiveKey
         case .data: dataReceiveKey
+        case .priorityInput: priorityInputReceiveKey
         }
     }
 

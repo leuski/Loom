@@ -47,11 +47,17 @@ public struct LoomAuthenticatedSessionContext: Sendable, Codable, Equatable {
 ///
 /// Use ``interactiveMedia`` for latency-sensitive media where small transport
 /// buffers help prevent stale packets from accumulating. Use
+/// ``priorityInputRealtime`` and ``priorityInputProtected`` for first-class
+/// input lanes that must not sit behind media stream traffic. Use
 /// ``throughputProbe`` when you need to intentionally overdrive a path and
 /// observe where loss begins, such as an explicit network-capacity test.
 public enum LoomQueuedUnreliableSendProfile: String, Sendable, Codable, CaseIterable {
     /// Keeps the underlying ordered unreliable queue shallow to favor latency.
     case interactiveMedia
+    /// Keeps only the newest pending input payload when the transport is busy.
+    case priorityInputRealtime
+    /// Preserves protected input ordering with a shallow independent queue.
+    case priorityInputProtected
     /// Allows a much deeper queue so throughput probes can saturate fast paths.
     case throughputProbe
 
@@ -66,6 +72,16 @@ public enum LoomQueuedUnreliableSendProfile: String, Sendable, Codable, CaseIter
             LoomQueuedUnreliableSendLimits(
                 maxOutstandingPackets: 1024,
                 maxOutstandingBytes: 2 * 1024 * 1024
+            )
+        case .priorityInputRealtime:
+            LoomQueuedUnreliableSendLimits(
+                maxOutstandingPackets: 1,
+                maxOutstandingBytes: 64 * 1024
+            )
+        case .priorityInputProtected:
+            LoomQueuedUnreliableSendLimits(
+                maxOutstandingPackets: 64,
+                maxOutstandingBytes: 256 * 1024
             )
         case .throughputProbe:
             LoomQueuedUnreliableSendLimits(
@@ -582,6 +598,82 @@ public actor LoomAuthenticatedSession: LoomSessionProtocol {
             )
         )
         return stream
+    }
+
+    /// Creates a direct local-UDP priority input endpoint for this authenticated
+    /// session.
+    public func makePriorityInputEndpoint() throws -> LoomPriorityInputEndpoint {
+        guard case .ready = state else {
+            throw LoomError.protocolError("Authenticated Loom session is not ready.")
+        }
+        // TODO: Enable the priority input lane for remote transports after
+        // congestion, NAT traversal, and path-health behavior are validated.
+        guard transportKind == .udp,
+              transport.receiveSemantics == .independentReliableAndUnreliable else {
+            throw LoomError.protocolError("Priority input lane is only available on local UDP transports.")
+        }
+        guard Self.isLocalPriorityInputPath(
+            pathSnapshot: currentPathSnapshot,
+            remoteEndpoint: remoteEndpoint
+        ) else {
+            throw LoomError.protocolError("Priority input lane is only available on local UDP transports.")
+        }
+        guard encryptionEnabled, let securityContext else {
+            throw LoomError.protocolError("Priority input lane requires Loom session encryption.")
+        }
+        return LoomPriorityInputEndpoint(
+            securityContext: securityContext,
+            sendFrame: { [transport] frame, profile, onComplete in
+                await transport.sendUnreliableQueued(
+                    frame,
+                    profile: profile,
+                    onComplete: onComplete
+                )
+            },
+            receiveFrame: { [transport] maxBytes in
+                try await transport.receivePriorityUnreliable(maxBytes: maxBytes)
+            }
+        )
+    }
+
+    private static func isLocalPriorityInputPath(
+        pathSnapshot: LoomSessionNetworkPathSnapshot?,
+        remoteEndpoint: NWEndpoint?
+    ) -> Bool {
+        if let pathSnapshot {
+            let usesLocalInterface = pathSnapshot.usesWiFi ||
+                pathSnapshot.usesWiredEthernet ||
+                pathSnapshot.usesLoopback ||
+                pathSnapshot.interfaceNames.contains { $0.lowercased().hasPrefix("awdl") }
+            guard usesLocalInterface else { return false }
+            return isLocalPriorityInputHost(remoteEndpoint ?? pathSnapshot.remoteEndpoint)
+        }
+
+        return isLocalPriorityInputHost(remoteEndpoint)
+    }
+
+    private static func isLocalPriorityInputHost(_ endpoint: NWEndpoint?) -> Bool {
+        guard case let .hostPort(host, _) = endpoint else { return false }
+        let normalized = "\(host)".lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
+        if normalized == "localhost" || normalized == "::1" || normalized == "[::1]" { return true }
+        if normalized.contains(".local") { return true }
+        if normalized.hasPrefix("fe80:") || normalized.hasPrefix("[fe80:") { return true }
+        if normalized.hasPrefix("fc") || normalized.hasPrefix("[fc") { return true }
+        if normalized.hasPrefix("fd") || normalized.hasPrefix("[fd") { return true }
+
+        let tokens = normalized.split(separator: ".", omittingEmptySubsequences: false)
+        guard tokens.count == 4,
+              let first = UInt8(tokens[0]),
+              let second = UInt8(tokens[1]) else {
+            return false
+        }
+
+        if first == 127 { return true }
+        if first == 10 { return true }
+        if first == 192, second == 168 { return true }
+        if first == 172, (16 ... 31).contains(second) { return true }
+        if first == 169, second == 254 { return true }
+        return false
     }
 
     public func cancel() async {

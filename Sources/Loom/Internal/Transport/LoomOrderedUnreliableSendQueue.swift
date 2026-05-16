@@ -13,6 +13,7 @@ package final class LoomOrderedUnreliableSendQueue: @unchecked Sendable {
     package struct Limits: Sendable, Equatable {
         let maxOutstandingPackets: Int
         let maxOutstandingBytes: Int
+        let replacesQueuedSends: Bool
     }
 
     private struct PendingSend {
@@ -29,6 +30,7 @@ package final class LoomOrderedUnreliableSendQueue: @unchecked Sendable {
     private let sendOperation: @Sendable (Data, @escaping @Sendable (NWError?) -> Void) -> Void
     private let maxOutstandingPackets: Int
     private let maxOutstandingBytes: Int
+    private let replacesQueuedSends: Bool
     private var isClosed = false
     private var pendingSends: [PendingSend] = []
     private var outstandingPackets = 0
@@ -38,7 +40,8 @@ package final class LoomOrderedUnreliableSendQueue: @unchecked Sendable {
         let recommendedLimits = profile.recommendedLimits
         return Limits(
             maxOutstandingPackets: recommendedLimits.maxOutstandingPackets,
-            maxOutstandingBytes: recommendedLimits.maxOutstandingBytes
+            maxOutstandingBytes: recommendedLimits.maxOutstandingBytes,
+            replacesQueuedSends: profile == .priorityInputRealtime
         )
     }
 
@@ -46,11 +49,13 @@ package final class LoomOrderedUnreliableSendQueue: @unchecked Sendable {
         connection: NWConnection,
         queue: DispatchQueue,
         maxOutstandingPackets: Int = defaultMaxOutstandingPackets,
-        maxOutstandingBytes: Int = defaultMaxOutstandingBytes
+        maxOutstandingBytes: Int = defaultMaxOutstandingBytes,
+        replacesQueuedSends: Bool = false
     ) {
         self.queue = queue
         self.maxOutstandingPackets = max(1, maxOutstandingPackets)
         self.maxOutstandingBytes = max(1, maxOutstandingBytes)
+        self.replacesQueuedSends = replacesQueuedSends
         sendOperation = { [connection] data, onComplete in
             connection.send(content: data, completion: .contentProcessed { error in
                 onComplete(error)
@@ -62,11 +67,13 @@ package final class LoomOrderedUnreliableSendQueue: @unchecked Sendable {
         queue: DispatchQueue,
         maxOutstandingPackets: Int = defaultMaxOutstandingPackets,
         maxOutstandingBytes: Int = defaultMaxOutstandingBytes,
+        replacesQueuedSends: Bool = false,
         sendOperation: @escaping @Sendable (Data, @escaping @Sendable (NWError?) -> Void) -> Void
     ) {
         self.queue = queue
         self.maxOutstandingPackets = max(1, maxOutstandingPackets)
         self.maxOutstandingBytes = max(1, maxOutstandingBytes)
+        self.replacesQueuedSends = replacesQueuedSends
         self.sendOperation = sendOperation
     }
 
@@ -75,6 +82,11 @@ package final class LoomOrderedUnreliableSendQueue: @unchecked Sendable {
             guard !isClosed else {
                 onComplete(.posix(.ECANCELED))
                 return
+            }
+            if replacesQueuedSends {
+                let droppedSends = pendingSends
+                pendingSends.removeAll(keepingCapacity: true)
+                droppedSends.forEach { $0.onComplete(.posix(.ECANCELED)) }
             }
             pendingSends.append(PendingSend(data: data, onComplete: onComplete))
             drainIfPossible()

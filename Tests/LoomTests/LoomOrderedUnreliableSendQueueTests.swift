@@ -8,6 +8,7 @@
 @testable import Loom
 import Dispatch
 import Foundation
+import Network
 import Testing
 
 @Suite("Loom Ordered Unreliable Send Queue")
@@ -86,6 +87,38 @@ struct LoomOrderedUnreliableSendQueueTests {
         #expect(recorder.recordedProfiles == [.throughputProbe])
     }
 
+    @Test("Priority realtime queue keeps newest pending input")
+    func priorityRealtimeQueueKeepsNewestPendingInput() async throws {
+        let limits = LoomOrderedUnreliableSendQueue.limits(for: .priorityInputRealtime)
+        let recorder = LockedSendRecorder()
+        let droppedCount = LockedCounter()
+        let queue = LoomOrderedUnreliableSendQueue(
+            queue: DispatchQueue(label: "loom.tests.queue.priority-input"),
+            maxOutstandingPackets: limits.maxOutstandingPackets,
+            maxOutstandingBytes: limits.maxOutstandingBytes,
+            replacesQueuedSends: limits.replacesQueuedSends,
+            sendOperation: { data, completion in
+                recorder.record(data: data, completion: completion)
+            }
+        )
+
+        queue.enqueue(Data([1])) { _ in }
+        queue.enqueue(Data([2])) { error in
+            if error != nil {
+                droppedCount.increment()
+            }
+        }
+        queue.enqueue(Data([3])) { _ in }
+
+        try await waitForCounter(droppedCount, expected: 1)
+        #expect(recorder.recordedPayloads == [Data([1])])
+
+        recorder.completeNext(error: nil)
+        try await waitForRecordedPayloads(recorder, expected: [Data([1]), Data([3])])
+
+        queue.close()
+    }
+
     private func waitForCounter(
         _ counter: LockedCounter,
         expected: Int,
@@ -99,6 +132,21 @@ struct LoomOrderedUnreliableSendQueueTests {
             try await Task.sleep(for: .milliseconds(10))
         }
         Issue.record("Timed out waiting for queued sends to reach \(expected); saw \(counter.value)")
+    }
+
+    private func waitForRecordedPayloads(
+        _ recorder: LockedSendRecorder,
+        expected: [Data],
+        timeout: Duration = .seconds(2)
+    ) async throws {
+        let deadline = ContinuousClock.now + timeout
+        while ContinuousClock.now < deadline {
+            if recorder.recordedPayloads == expected {
+                return
+            }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        Issue.record("Timed out waiting for recorded payloads; saw \(recorder.recordedPayloads)")
     }
 }
 
@@ -117,6 +165,35 @@ private final class LockedCounter: @unchecked Sendable {
         lock.lock()
         storage += 1
         lock.unlock()
+    }
+}
+
+private final class LockedSendRecorder: @unchecked Sendable {
+    private let lock = NSLock()
+    private var payloadStorage: [Data] = []
+    private var completionStorage: [@Sendable (NWError?) -> Void] = []
+
+    var recordedPayloads: [Data] {
+        lock.lock()
+        defer { lock.unlock() }
+        return payloadStorage
+    }
+
+    func record(
+        data: Data,
+        completion: @escaping @Sendable (NWError?) -> Void
+    ) {
+        lock.lock()
+        payloadStorage.append(data)
+        completionStorage.append(completion)
+        lock.unlock()
+    }
+
+    func completeNext(error: NWError?) {
+        lock.lock()
+        let completion = completionStorage.isEmpty ? nil : completionStorage.removeFirst()
+        lock.unlock()
+        completion?(error)
     }
 }
 

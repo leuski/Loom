@@ -48,6 +48,9 @@ package actor LoomReliableChannel: LoomSessionTransport {
     private var unreliableDeliveryContinuation: AsyncStream<Data>.Continuation?
     private let unreliableDeliveryStream: AsyncStream<Data>
 
+    private var priorityUnreliableDeliveryContinuation: AsyncStream<Data>.Continuation?
+    private let priorityUnreliableDeliveryStream: AsyncStream<Data>
+
     // MARK: - Ordered Delivery
 
     private var nextDeliverySequence: UInt32 = 0
@@ -87,6 +90,9 @@ package actor LoomReliableChannel: LoomSessionTransport {
         let (uStream, uContinuation) = AsyncStream.makeStream(of: Data.self)
         unreliableDeliveryStream = uStream
         unreliableDeliveryContinuation = uContinuation
+        let (priorityStream, priorityContinuation) = AsyncStream.makeStream(of: Data.self)
+        priorityUnreliableDeliveryStream = priorityStream
+        priorityUnreliableDeliveryContinuation = priorityContinuation
     }
 
     deinit {
@@ -96,6 +102,7 @@ package actor LoomReliableChannel: LoomSessionTransport {
         deliveryContinuation?.finish()
         handshakeDeliveryContinuation?.finish()
         unreliableDeliveryContinuation?.finish()
+        priorityUnreliableDeliveryContinuation?.finish()
     }
 
     // MARK: - LoomSessionTransport
@@ -323,6 +330,23 @@ package actor LoomReliableChannel: LoomSessionTransport {
         )
     }
 
+    package func receivePriorityUnreliable(maxBytes: Int) async throws -> Data {
+        for await message in priorityUnreliableDeliveryStream {
+            if message.count > maxBytes {
+                throw LoomError.protocolError(
+                    "Received priority unreliable message exceeds limit: \(message.count) > \(maxBytes)"
+                )
+            }
+            return message
+        }
+        if let terminalFailure {
+            throw LoomError.connectionFailed(terminalFailure)
+        }
+        throw LoomError.connectionFailed(
+            LoomConnectionFailure(reason: .cancelled, detail: "Reliable channel cancelled.")
+        )
+    }
+
     package func cancelPendingUnreliableSends() async {
         for sender in queuedUnreliableSenders.values {
             sender.close()
@@ -349,6 +373,8 @@ package actor LoomReliableChannel: LoomSessionTransport {
         handshakeDeliveryContinuation = nil
         unreliableDeliveryContinuation?.finish()
         unreliableDeliveryContinuation = nil
+        priorityUnreliableDeliveryContinuation?.finish()
+        priorityUnreliableDeliveryContinuation = nil
         connection.cancel()
     }
 
@@ -367,7 +393,8 @@ package actor LoomReliableChannel: LoomSessionTransport {
                 qos: .userInteractive
             ),
             maxOutstandingPackets: limits.maxOutstandingPackets,
-            maxOutstandingBytes: limits.maxOutstandingBytes
+            maxOutstandingBytes: limits.maxOutstandingBytes,
+            replacesQueuedSends: limits.replacesQueuedSends
         )
         queuedUnreliableSenders[profile] = sender
         return sender
@@ -629,7 +656,11 @@ package actor LoomReliableChannel: LoomSessionTransport {
 
         // Unreliable packets bypass sequence tracking and ordered delivery.
         guard header.flags.contains(.reliable) else {
-            unreliableDeliveryContinuation?.yield(payload)
+            if payload.first == LoomSessionTrafficClass.priorityInput.rawValue {
+                priorityUnreliableDeliveryContinuation?.yield(payload)
+            } else {
+                unreliableDeliveryContinuation?.yield(payload)
+            }
             return
         }
 
