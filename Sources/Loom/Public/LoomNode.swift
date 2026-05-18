@@ -152,12 +152,14 @@ public final class LoomNode {
         to endpoint: NWEndpoint,
         using transportKind: LoomTransportKind,
         enablePeerToPeer: Bool? = nil,
+        requiredInterface: NWInterface? = nil,
         requiredInterfaceType: NWInterface.InterfaceType? = nil,
         requiredLocalPort: UInt16? = nil
     ) throws -> NWConnection {
         let parameters = try LoomTransportParametersFactory.makeParameters(
             for: transportKind,
             enablePeerToPeer: enablePeerToPeer ?? configuration.enablePeerToPeer,
+            requiredInterface: requiredInterface,
             requiredInterfaceType: requiredInterfaceType,
             quicALPN: configuration.quicALPN
         )
@@ -174,6 +176,7 @@ public final class LoomNode {
         hello: LoomSessionHelloRequest,
         encryptionPolicy: LoomSessionEncryptionPolicy = .required,
         enablePeerToPeer: Bool? = nil,
+        requiredInterface: NWInterface? = nil,
         requiredInterfaceType: NWInterface.InterfaceType? = nil,
         requiredLocalPort: UInt16? = nil,
         queue: DispatchQueue = .global(qos: .userInitiated),
@@ -205,6 +208,7 @@ public final class LoomNode {
                 to: target,
                 using: transportKind,
                 enablePeerToPeer: enablePeerToPeer,
+                requiredInterface: requiredInterface,
                 requiredInterfaceType: requiredInterfaceType,
                 requiredLocalPort: requiredLocalPort
             )

@@ -12,6 +12,17 @@ import Testing
 
 @Suite("Loom Discovery")
 struct LoomDiscoveryTests {
+    @Test("Discovered interfaces identify AWDL as peer-to-peer")
+    func discoveredInterfaceIdentifiesAwdl() {
+        let discoveredInterface = LoomDiscoveredInterface(
+            name: "awdl0",
+            type: .other,
+            index: 12
+        )
+
+        #expect(discoveredInterface.isPeerToPeer)
+    }
+
     @MainActor
     @Test("Discovery stays stopped when Bonjour is disabled")
     func discoveryDoesNotStartWhenBonjourIsDisabled() {
@@ -197,6 +208,11 @@ struct LoomDiscoveryTests {
     func discoveryExpandsSharedHostCatalog() throws {
         let deviceID = UUID()
         let discovery = LoomDiscovery()
+        let awdlInterface = LoomDiscoveredInterface(
+            name: "awdl0",
+            type: .other,
+            index: 12
+        )
         let catalog = LoomHostCatalog(
             entries: [
                 LoomHostCatalogEntry(
@@ -226,7 +242,8 @@ struct LoomDiscoveryTests {
                 deviceID: deviceID,
                 deviceType: .mac,
                 metadata: metadata
-            )
+            ),
+            discoveredInterfaces: [awdlInterface]
         )
 
         discovery.upsertPeerForTesting(peer)
@@ -241,6 +258,7 @@ struct LoomDiscoveryTests {
         #expect(alphaPeer.name == "Alpha")
         #expect(alphaPeer.advertisement.metadata["alpha"] == "1")
         #expect(alphaPeer.advertisement.metadata[LoomHostCatalogCodec.metadataKey] == nil)
+        #expect(alphaPeer.discoveredInterfaces == [awdlInterface])
     }
 
     @MainActor
@@ -394,6 +412,11 @@ struct LoomDiscoveryTests {
     func testingUpsertPreservesMissingAdvertisedDeviceID() throws {
         let discovery = LoomDiscovery()
         let fallbackID = UUID()
+        let awdlInterface = LoomDiscoveredInterface(
+            name: "awdl0",
+            type: .other,
+            index: 12
+        )
         let peer = LoomPeer(
             id: fallbackID,
             name: "Fallback Host",
@@ -405,7 +428,8 @@ struct LoomDiscoveryTests {
             advertisement: LoomPeerAdvertisement(
                 deviceID: nil,
                 deviceType: .mac
-            )
+            ),
+            discoveredInterfaces: [awdlInterface]
         )
 
         discovery.upsertPeerForTesting(peer)
@@ -413,6 +437,7 @@ struct LoomDiscoveryTests {
         let discoveredPeer = try #require(discovery.discoveredPeers.first)
         #expect(discoveredPeer.deviceID == fallbackID)
         #expect(discoveredPeer.advertisement.deviceID == nil)
+        #expect(discoveredPeer.discoveredInterfaces == [awdlInterface])
     }
 
     @MainActor
@@ -420,7 +445,8 @@ struct LoomDiscoveryTests {
         id: UUID,
         name: String,
         endpointPort: UInt16,
-        directTransports: [LoomDirectTransportAdvertisement]
+        directTransports: [LoomDirectTransportAdvertisement],
+        discoveredInterfaces: [LoomDiscoveredInterface] = []
     ) -> LoomPeer {
         LoomPeer(
             id: id,
@@ -434,7 +460,8 @@ struct LoomDiscoveryTests {
                 deviceID: id,
                 deviceType: .mac,
                 directTransports: directTransports
-            )
+            ),
+            discoveredInterfaces: discoveredInterfaces
         )
     }
 }

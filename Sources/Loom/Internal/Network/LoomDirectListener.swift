@@ -71,6 +71,7 @@ package enum LoomTransportParametersFactory {
     package static func makeParameters(
         for transportKind: LoomTransportKind,
         enablePeerToPeer: Bool,
+        requiredInterface: NWInterface? = nil,
         requiredInterfaceType: NWInterface.InterfaceType? = nil,
         quicALPN: [String] = []
     ) throws -> NWParameters {
@@ -95,10 +96,11 @@ package enum LoomTransportParametersFactory {
             parameters.includePeerToPeer = enablePeerToPeer
             parameters.serviceClass = .signaling
         }
-        if let requiredInterfaceType {
+        if let requiredInterface {
+            parameters.requiredInterface = requiredInterface
+        } else if let requiredInterfaceType {
             parameters.requiredInterfaceType = requiredInterfaceType
         }
         return parameters
     }
 }
-

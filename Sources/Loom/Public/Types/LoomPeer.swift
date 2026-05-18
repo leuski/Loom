@@ -8,6 +8,47 @@
 import Foundation
 import Network
 
+/// Interface metadata reported by Bonjour discovery for a peer.
+public struct LoomDiscoveredInterface: Hashable, Sendable {
+    /// System interface name, such as `en0` or `awdl0`.
+    public let name: String
+
+    /// Broad Network.framework interface type.
+    public let type: NWInterface.InterfaceType
+
+    /// System interface index.
+    public let index: Int
+
+    /// Backing Network.framework interface when this value originated from discovery.
+    public let networkInterface: NWInterface?
+
+    /// Whether this interface represents an Apple peer-to-peer link.
+    public var isPeerToPeer: Bool {
+        name.lowercased().hasPrefix("awdl")
+    }
+
+    public init(
+        name: String,
+        type: NWInterface.InterfaceType,
+        index: Int,
+        networkInterface: NWInterface? = nil
+    ) {
+        self.name = name
+        self.type = type
+        self.index = index
+        self.networkInterface = networkInterface
+    }
+
+    public init(_ interface: NWInterface) {
+        self.init(
+            name: interface.name,
+            type: interface.type,
+            index: interface.index,
+            networkInterface: interface
+        )
+    }
+}
+
 /// Represents a discovered peer on the network.
 public struct LoomPeer: Identifiable, Hashable, Sendable {
     /// Unique identifier for this peer.
@@ -33,6 +74,9 @@ public struct LoomPeer: Identifiable, Hashable, Sendable {
     /// to avoid platform-specific mDNS resolution failures (e.g. iOS).
     public let resolvedAddresses: [NWEndpoint.Host]
 
+    /// Interfaces on which this peer was discovered.
+    public let discoveredInterfaces: [LoomDiscoveredInterface]
+
     /// Convenience access to the host device backing this peer.
     public var deviceID: UUID {
         id.deviceID
@@ -49,7 +93,8 @@ public struct LoomPeer: Identifiable, Hashable, Sendable {
         deviceType: DeviceType,
         endpoint: NWEndpoint,
         advertisement: LoomPeerAdvertisement,
-        resolvedAddresses: [NWEndpoint.Host] = []
+        resolvedAddresses: [NWEndpoint.Host] = [],
+        discoveredInterfaces: [LoomDiscoveredInterface] = []
     ) {
         self.id = id
         self.name = name
@@ -57,6 +102,7 @@ public struct LoomPeer: Identifiable, Hashable, Sendable {
         self.endpoint = endpoint
         self.advertisement = advertisement
         self.resolvedAddresses = resolvedAddresses
+        self.discoveredInterfaces = discoveredInterfaces
     }
 
     public init(
@@ -66,7 +112,8 @@ public struct LoomPeer: Identifiable, Hashable, Sendable {
         deviceType: DeviceType,
         endpoint: NWEndpoint,
         advertisement: LoomPeerAdvertisement,
-        resolvedAddresses: [NWEndpoint.Host] = []
+        resolvedAddresses: [NWEndpoint.Host] = [],
+        discoveredInterfaces: [LoomDiscoveredInterface] = []
     ) {
         self.init(
             id: LoomPeerID(deviceID: id, appID: appID),
@@ -74,7 +121,8 @@ public struct LoomPeer: Identifiable, Hashable, Sendable {
             deviceType: deviceType,
             endpoint: endpoint,
             advertisement: advertisement,
-            resolvedAddresses: resolvedAddresses
+            resolvedAddresses: resolvedAddresses,
+            discoveredInterfaces: discoveredInterfaces
         )
     }
 
@@ -84,7 +132,8 @@ public struct LoomPeer: Identifiable, Hashable, Sendable {
         deviceType: DeviceType,
         endpoint: NWEndpoint,
         advertisement: LoomPeerAdvertisement,
-        resolvedAddresses: [NWEndpoint.Host] = []
+        resolvedAddresses: [NWEndpoint.Host] = [],
+        discoveredInterfaces: [LoomDiscoveredInterface] = []
     ) {
         self.init(
             id: LoomPeerID(deviceID: id),
@@ -92,7 +141,8 @@ public struct LoomPeer: Identifiable, Hashable, Sendable {
             deviceType: deviceType,
             endpoint: endpoint,
             advertisement: advertisement,
-            resolvedAddresses: resolvedAddresses
+            resolvedAddresses: resolvedAddresses,
+            discoveredInterfaces: discoveredInterfaces
         )
     }
 

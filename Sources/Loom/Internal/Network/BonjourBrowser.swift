@@ -242,7 +242,8 @@ public final class LoomDiscovery {
             peerName: peerName,
             endpoint: result.endpoint,
             txtRecord: txtRecord(for: result),
-            resolvedAddresses: resolvedAddresses
+            resolvedAddresses: resolvedAddresses,
+            discoveredInterfaces: result.interfaces.map(LoomDiscoveredInterface.init)
         )
     }
 
@@ -250,7 +251,8 @@ public final class LoomDiscovery {
         peerName: String,
         endpoint: NWEndpoint,
         txtRecord: [String: String],
-        resolvedAddresses: [NWEndpoint.Host] = []
+        resolvedAddresses: [NWEndpoint.Host] = [],
+        discoveredInterfaces: [LoomDiscoveredInterface] = []
     ) {
         let decodedAdvertisement = LoomPeerAdvertisement.from(txtRecord: txtRecord)
         if !txtRecord.isEmpty {
@@ -291,7 +293,8 @@ public final class LoomDiscovery {
             deviceType: normalizedAdvertisement.deviceType ?? .unknown,
             endpoint: endpoint,
             advertisement: normalizedAdvertisement,
-            resolvedAddresses: resolvedAddresses
+            resolvedAddresses: resolvedAddresses,
+            discoveredInterfaces: discoveredInterfaces
         )
 
         storeCandidate(candidate, for: endpoint, peerID: peerID)
@@ -450,7 +453,8 @@ public final class LoomDiscovery {
             deviceType: peer.deviceType,
             endpoint: peer.endpoint,
             advertisement: peer.advertisement,
-            resolvedAddresses: peer.resolvedAddresses
+            resolvedAddresses: peer.resolvedAddresses,
+            discoveredInterfaces: peer.discoveredInterfaces
         )
         storeCandidate(candidate, for: peer.endpoint, peerID: peer.deviceID)
     }
@@ -459,13 +463,15 @@ public final class LoomDiscovery {
         peerName: String,
         endpoint: NWEndpoint,
         txtRecord: [String: String],
-        resolvedAddresses: [NWEndpoint.Host] = []
+        resolvedAddresses: [NWEndpoint.Host] = [],
+        discoveredInterfaces: [LoomDiscoveredInterface] = []
     ) {
         upsertBonjourPeer(
             peerName: peerName,
             endpoint: endpoint,
             txtRecord: txtRecord,
-            resolvedAddresses: resolvedAddresses
+            resolvedAddresses: resolvedAddresses,
+            discoveredInterfaces: discoveredInterfaces
         )
     }
 
@@ -498,7 +504,8 @@ public final class LoomDiscovery {
                 deviceType: preferredCandidate.deviceType,
                 endpoint: preferredCandidate.endpoint,
                 advertisement: projection.advertisement,
-                resolvedAddresses: preferredCandidate.resolvedAddresses
+                resolvedAddresses: preferredCandidate.resolvedAddresses,
+                discoveredInterfaces: preferredCandidate.discoveredInterfaces
             )
         }
         updatePeersList()
@@ -593,6 +600,7 @@ private struct PublishedPeerSnapshot: Equatable {
     let endpoint: NWEndpoint
     let advertisement: LoomPeerAdvertisement
     let resolvedAddresses: [NWEndpoint.Host]
+    let discoveredInterfaces: [LoomDiscoveredInterface]
 
     init(_ peer: LoomPeer) {
         id = peer.id
@@ -601,6 +609,7 @@ private struct PublishedPeerSnapshot: Equatable {
         endpoint = peer.endpoint
         advertisement = peer.advertisement
         resolvedAddresses = peer.resolvedAddresses
+        discoveredInterfaces = peer.discoveredInterfaces
     }
 }
 
@@ -610,4 +619,5 @@ private struct LoomHostDiscoveryCandidate {
     let endpoint: NWEndpoint
     let advertisement: LoomPeerAdvertisement
     let resolvedAddresses: [NWEndpoint.Host]
+    let discoveredInterfaces: [LoomDiscoveredInterface]
 }
