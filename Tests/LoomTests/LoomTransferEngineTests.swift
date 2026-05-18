@@ -309,6 +309,7 @@ private struct TransferPair {
     let listener: NWListener
     let clientIdentityManager: LoomIdentityManager
     let serverIdentityManager: LoomIdentityManager
+    let serverTrustProvider: TransferAlwaysTrustProvider
     let clientHello: LoomSessionHelloRequest
     let serverHello: LoomSessionHelloRequest
     let client: LoomAuthenticatedSession
@@ -327,7 +328,8 @@ private struct TransferPair {
         )
         async let serverContext = server.start(
             localHello: serverHello,
-            identityManager: serverIdentityManager
+            identityManager: serverIdentityManager,
+            trustProvider: serverTrustProvider
         )
         _ = try await (clientContext, serverContext)
     }
@@ -385,6 +387,7 @@ private func makeTransferPair() async throws -> TransferPair {
         listener: listener,
         clientIdentityManager: clientIdentityManager,
         serverIdentityManager: serverIdentityManager,
+        serverTrustProvider: TransferAlwaysTrustProvider(),
         clientHello: LoomSessionHelloRequest(
             deviceID: UUID(),
             deviceName: "Client",
@@ -400,6 +403,21 @@ private func makeTransferPair() async throws -> TransferPair {
         client: client,
         server: server
     )
+}
+
+@MainActor
+private final class TransferAlwaysTrustProvider: LoomTrustProvider {
+    func evaluateTrust(for peer: LoomPeerIdentity) async -> LoomTrustDecision {
+        .trusted
+    }
+
+    func evaluateTrustOutcome(for peer: LoomPeerIdentity) async -> LoomTrustEvaluation {
+        LoomTrustEvaluation(decision: .trusted, shouldShowAutoTrustNotice: false)
+    }
+
+    func grantTrust(to peer: LoomPeerIdentity) async throws {}
+
+    func revokeTrust(for deviceID: UUID) async throws {}
 }
 
 private func terminalProgress(

@@ -398,6 +398,15 @@ public actor LoomTransferEngine {
             throw LoomTransferError.missingTransferState
         }
         guard resumeOffset <= state.offer.byteLength else {
+            outgoingTransfers.removeValue(forKey: id)
+            await scheduler.finishTransfer(id: id)
+            state.handle.yield(progress(for: state.offer, bytesTransferred: state.bytesTransferred, state: .failed))
+            try? await sendControlMessage(
+                LoomTransferControlMessage(
+                    kind: .cancel,
+                    transferID: id
+                )
+            )
             throw LoomTransferError.protocolViolation(
                 "Invalid Loom transfer resume offset \(resumeOffset) for byteLength \(state.offer.byteLength)."
             )

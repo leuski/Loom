@@ -8,6 +8,20 @@
 import Foundation
 import Network
 
+/// Network-interface class inferred from Bonjour discovery metadata.
+public enum LoomDiscoveredInterfaceKind: String, Hashable, Sendable {
+    case applePrivateNCM
+    case awdl
+    case lowLatencyWireless
+    case wiredEthernet
+    case bridge
+    case wifi
+    case cellular
+    case loopback
+    case overlay
+    case other
+}
+
 /// Interface metadata reported by Bonjour discovery for a peer.
 public struct LoomDiscoveredInterface: Hashable, Sendable {
     /// System interface name, such as `en0` or `awdl0`.
@@ -22,9 +36,73 @@ public struct LoomDiscoveredInterface: Hashable, Sendable {
     /// Backing Network.framework interface when this value originated from discovery.
     public let networkInterface: NWInterface?
 
+    /// Interface class inferred from the system name and Network.framework type.
+    public var kind: LoomDiscoveredInterfaceKind {
+        let normalizedName = name.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if normalizedName.hasPrefix("anpi") {
+            return .applePrivateNCM
+        }
+        if normalizedName.hasPrefix("awdl") {
+            return .awdl
+        }
+        if normalizedName.hasPrefix("llw") {
+            return .lowLatencyWireless
+        }
+        if normalizedName.hasPrefix("bridge") {
+            return .bridge
+        }
+        if normalizedName.hasPrefix("utun") {
+            return .overlay
+        }
+        if normalizedName.hasPrefix("pdp_ip") {
+            return .cellular
+        }
+        if normalizedName == "lo" || normalizedName.hasPrefix("lo") {
+            return .loopback
+        }
+
+        switch type {
+        case .wifi:
+            return .wifi
+        case .wiredEthernet:
+            return .wiredEthernet
+        case .cellular:
+            return .cellular
+        case .loopback:
+            return .loopback
+        case .other:
+            return .other
+        @unknown default:
+            return .other
+        }
+    }
+
+    /// Lower values should be attempted first for proximity-oriented connections.
+    public var proximityPriority: Int? {
+        switch kind {
+        case .applePrivateNCM:
+            0
+        case .awdl:
+            1
+        case .lowLatencyWireless:
+            2
+        case .wiredEthernet:
+            3
+        case .bridge:
+            4
+        case .wifi, .cellular, .loopback, .overlay, .other:
+            nil
+        }
+    }
+
+    /// Whether this interface is worth trying before normal resolved-IP fallback.
+    public var isProximityPreferred: Bool {
+        proximityPriority != nil
+    }
+
     /// Whether this interface represents an Apple peer-to-peer link.
     public var isPeerToPeer: Bool {
-        name.lowercased().hasPrefix("awdl")
+        kind == .awdl
     }
 
     public init(

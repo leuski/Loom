@@ -13,6 +13,10 @@ import Foundation
 /// NWBrowser `-65555 (NoAuth)` error.
 func validateBonjourInfoPlistKeys(serviceType: String) {
     #if DEBUG
+    guard !isRunningInSwiftPMTestBundle() else {
+        return
+    }
+
     let info = Bundle.main.infoDictionary
 
     if let services = info?["NSBonjourServices"] as? [String] {
@@ -63,3 +67,29 @@ func validateBonjourInfoPlistKeys(serviceType: String) {
     }
     #endif
 }
+
+#if DEBUG
+private func isRunningInSwiftPMTestBundle() -> Bool {
+    let processInfo = ProcessInfo.processInfo
+    if processInfo.environment["XCTestConfigurationFilePath"] != nil {
+        return true
+    }
+
+    var bundlePaths = [
+        Bundle.main.bundlePath,
+        Bundle.main.bundleURL.path,
+    ]
+    if let executablePath = Bundle.main.executableURL?.path {
+        bundlePaths.append(executablePath)
+    }
+    if bundlePaths.contains(where: { $0.contains(".xctest") }) {
+        return true
+    }
+
+    return processInfo.arguments.contains { argument in
+        argument.contains(".xctest") ||
+            argument == "--testing-library" ||
+            argument == "swift-testing"
+    }
+}
+#endif

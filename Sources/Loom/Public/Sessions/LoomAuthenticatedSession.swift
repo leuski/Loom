@@ -659,12 +659,20 @@ public actor LoomAuthenticatedSession: LoomSessionProtocol {
             let usesLocalInterface = pathSnapshot.usesWiFi ||
                 pathSnapshot.usesWiredEthernet ||
                 pathSnapshot.usesLoopback ||
-                pathSnapshot.interfaceNames.contains { $0.lowercased().hasPrefix("awdl") }
+                pathSnapshot.interfaceNames.contains(where: Self.isLocalProximityInterfaceName(_:))
             guard usesLocalInterface else { return false }
             return isLocalPriorityInputHost(remoteEndpoint ?? pathSnapshot.remoteEndpoint)
         }
 
         return isLocalPriorityInputHost(remoteEndpoint)
+    }
+
+    private static func isLocalProximityInterfaceName(_ name: String) -> Bool {
+        let normalized = name.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return normalized.hasPrefix("anpi") ||
+            normalized.hasPrefix("awdl") ||
+            normalized.hasPrefix("llw") ||
+            normalized.hasPrefix("bridge")
     }
 
     private static func isLocalPriorityInputHost(_ endpoint: NWEndpoint?) -> Bool {

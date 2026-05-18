@@ -142,23 +142,27 @@ struct LoomCloudKitPeerManagerTests {
         )
 
         let attempts = await tracker.peerSaveAttempts()
-        #expect(attempts.count == 4)
+        #expect(attempts.count == 5)
         #expect(attempts[0].bootstrapMetadataBlob != nil)
         #expect(attempts[0].identityPublicKey != nil)
         #expect(attempts[0].deviceType != nil)
         #expect(attempts[0].overlayHintsBlob != nil)
-        #expect(attempts[1].bootstrapMetadataBlob == nil)
+        #expect(attempts[1].bootstrapMetadataBlob != nil)
         #expect(attempts[1].identityPublicKey != nil)
         #expect(attempts[1].deviceType != nil)
-        #expect(attempts[1].overlayHintsBlob != nil)
+        #expect(attempts[1].overlayHintsBlob == nil)
         #expect(attempts[2].bootstrapMetadataBlob == nil)
-        #expect(attempts[2].identityPublicKey == nil)
+        #expect(attempts[2].identityPublicKey != nil)
         #expect(attempts[2].deviceType != nil)
         #expect(attempts[2].overlayHintsBlob == nil)
         #expect(attempts[3].bootstrapMetadataBlob == nil)
         #expect(attempts[3].identityPublicKey == nil)
-        #expect(attempts[3].deviceType == nil)
+        #expect(attempts[3].deviceType != nil)
         #expect(attempts[3].overlayHintsBlob == nil)
+        #expect(attempts[4].bootstrapMetadataBlob == nil)
+        #expect(attempts[4].identityPublicKey == nil)
+        #expect(attempts[4].deviceType == nil)
+        #expect(attempts[4].overlayHintsBlob == nil)
         #expect(manager.peerRecord?.recordID.recordName == deviceID.uuidString)
 
         let encodedHints = try #require(attempts[0].overlayHintsBlob)
@@ -426,7 +430,7 @@ private actor RegistrationTracker {
             )
         )
 
-        if attempts.count < 4 {
+        if attempts.count < 5 {
             throw CKError(.invalidArguments)
         }
 

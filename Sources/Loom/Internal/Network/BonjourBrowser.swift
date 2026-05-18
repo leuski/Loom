@@ -530,6 +530,11 @@ public final class LoomDiscovery {
             }
         }
         return interfacesByKey.values.sorted { lhs, rhs in
+            let leftPriority = lhs.proximityPriority ?? Int.max
+            let rightPriority = rhs.proximityPriority ?? Int.max
+            if leftPriority != rightPriority {
+                return leftPriority < rightPriority
+            }
             if lhs.isPeerToPeer != rhs.isPeerToPeer {
                 return lhs.isPeerToPeer
             }

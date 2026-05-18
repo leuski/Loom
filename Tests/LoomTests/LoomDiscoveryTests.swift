@@ -21,6 +21,31 @@ struct LoomDiscoveryTests {
         )
 
         #expect(discoveredInterface.isPeerToPeer)
+        #expect(discoveredInterface.kind == .awdl)
+        #expect(discoveredInterface.proximityPriority == 1)
+    }
+
+    @Test("Discovered interfaces rank proximity candidates before ordinary Wi-Fi")
+    func discoveredInterfaceRanksProximityCandidates() {
+        let interfaces = [
+            LoomDiscoveredInterface(name: "en0", type: .wifi, index: 8),
+            LoomDiscoveredInterface(name: "bridge100", type: .other, index: 14),
+            LoomDiscoveredInterface(name: "awdl0", type: .other, index: 12),
+            LoomDiscoveredInterface(name: "en3", type: .wiredEthernet, index: 10),
+            LoomDiscoveredInterface(name: "llw0", type: .other, index: 13),
+            LoomDiscoveredInterface(name: "anpi0", type: .other, index: 9),
+        ]
+
+        let ranked = interfaces
+            .filter(\.isProximityPreferred)
+            .sorted {
+                ($0.proximityPriority ?? Int.max) < ($1.proximityPriority ?? Int.max)
+            }
+
+        #expect(ranked.map(\.name) == ["anpi0", "awdl0", "llw0", "en3", "bridge100"])
+        #expect(!interfaces[0].isProximityPreferred)
+        #expect(interfaces[5].kind == .applePrivateNCM)
+        #expect(interfaces[5].proximityPriority == 0)
     }
 
     @MainActor
@@ -203,6 +228,7 @@ struct LoomDiscoveryTests {
             ],
             discoveredInterfaces: [
                 LoomDiscoveredInterface(name: "en0", type: .wifi, index: 8),
+                LoomDiscoveredInterface(name: "anpi0", type: .other, index: 9),
             ]
         )
         let awdlPeer = makePeer(
@@ -226,7 +252,7 @@ struct LoomDiscoveryTests {
 
         let preferredPeer = try #require(discovery.discoveredPeers.first)
         #expect(preferredPeer.endpoint.debugDescription == wifiPeer.endpoint.debugDescription)
-        #expect(preferredPeer.discoveredInterfaces.map(\.name) == ["awdl0", "en0"])
+        #expect(preferredPeer.discoveredInterfaces.map(\.name) == ["anpi0", "awdl0", "en0"])
     }
 
     @MainActor
