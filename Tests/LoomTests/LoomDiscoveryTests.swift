@@ -186,6 +186,50 @@ struct LoomDiscoveryTests {
     }
 
     @MainActor
+    @Test("Discovery merges interfaces from same-device Bonjour candidates")
+    func discoveryMergesInterfacesFromSameDeviceCandidates() throws {
+        let deviceID = UUID()
+        let discovery = LoomDiscovery()
+        let wifiPeer = makePeer(
+            id: deviceID,
+            name: "Studio Mac",
+            endpointPort: 6600,
+            directTransports: [
+                LoomDirectTransportAdvertisement(
+                    transportKind: .udp,
+                    port: 6600,
+                    pathKind: .wifi
+                ),
+            ],
+            discoveredInterfaces: [
+                LoomDiscoveredInterface(name: "en0", type: .wifi, index: 8),
+            ]
+        )
+        let awdlPeer = makePeer(
+            id: deviceID,
+            name: "Studio Mac",
+            endpointPort: 7700,
+            directTransports: [
+                LoomDirectTransportAdvertisement(
+                    transportKind: .tcp,
+                    port: 7700,
+                    pathKind: .awdl
+                ),
+            ],
+            discoveredInterfaces: [
+                LoomDiscoveredInterface(name: "awdl0", type: .other, index: 12),
+            ]
+        )
+
+        discovery.upsertPeerForTesting(wifiPeer)
+        discovery.upsertPeerForTesting(awdlPeer)
+
+        let preferredPeer = try #require(discovery.discoveredPeers.first)
+        #expect(preferredPeer.endpoint.debugDescription == wifiPeer.endpoint.debugDescription)
+        #expect(preferredPeer.discoveredInterfaces.map(\.name) == ["awdl0", "en0"])
+    }
+
+    @MainActor
     @Test("Discovery filters the local device identifier from emitted peers")
     func discoveryFiltersLocalDeviceID() {
         let localDeviceID = UUID()

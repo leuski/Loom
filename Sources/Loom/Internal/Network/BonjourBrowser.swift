@@ -490,6 +490,7 @@ public final class LoomDiscovery {
             updatePeersList()
             return
         }
+        let discoveredInterfaces = mergedDiscoveredInterfaces(from: candidates.values)
 
         removeProjectedPeers(forDeviceID: peerID)
         let projections = LoomHostCatalogCodec.projections(
@@ -505,10 +506,38 @@ public final class LoomDiscovery {
                 endpoint: preferredCandidate.endpoint,
                 advertisement: projection.advertisement,
                 resolvedAddresses: preferredCandidate.resolvedAddresses,
-                discoveredInterfaces: preferredCandidate.discoveredInterfaces
+                discoveredInterfaces: discoveredInterfaces
             )
         }
         updatePeersList()
+    }
+
+    private func mergedDiscoveredInterfaces(
+        from candidates: Dictionary<NWEndpoint, LoomHostDiscoveryCandidate>.Values
+    ) -> [LoomDiscoveredInterface] {
+        var interfacesByKey: [String: LoomDiscoveredInterface] = [:]
+        for candidate in candidates {
+            for discoveredInterface in candidate.discoveredInterfaces {
+                let key: String
+                if discoveredInterface.index > 0 {
+                    key = "index:\(discoveredInterface.index)"
+                } else {
+                    key = "name:\(discoveredInterface.name.lowercased())"
+                }
+                if interfacesByKey[key]?.networkInterface == nil {
+                    interfacesByKey[key] = discoveredInterface
+                }
+            }
+        }
+        return interfacesByKey.values.sorted { lhs, rhs in
+            if lhs.isPeerToPeer != rhs.isPeerToPeer {
+                return lhs.isPeerToPeer
+            }
+            if lhs.index != rhs.index {
+                return lhs.index < rhs.index
+            }
+            return lhs.name < rhs.name
+        }
     }
 
     private func isPreferredPeer(_ lhs: LoomHostDiscoveryCandidate, _ rhs: LoomHostDiscoveryCandidate) -> Bool {
