@@ -52,6 +52,15 @@ public final class LoomPriorityInputEndpoint: @unchecked Sendable {
         send(payload, profile: .priorityInputRealtimeSequenced, onComplete: onComplete)
     }
 
+    /// Send compact continuous input batches that should preserve sample
+    /// continuity without replacing queued packets.
+    public func sendContinuous(
+        _ payload: Data,
+        onComplete: @escaping @Sendable (Error?) -> Void = { _ in }
+    ) {
+        send(payload, profile: .priorityInputContinuous, onComplete: onComplete)
+    }
+
     /// Send protected input on the priority lane. The application should pair
     /// this with an acknowledgement and reliable fallback for exactly-once
     /// actions such as clicks and key events.

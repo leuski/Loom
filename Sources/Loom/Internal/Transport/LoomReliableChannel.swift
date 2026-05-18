@@ -395,7 +395,8 @@ package actor LoomReliableChannel: LoomSessionTransport {
             maxOutstandingPackets: limits.maxOutstandingPackets,
             maxOutstandingBytes: limits.maxOutstandingBytes,
             maxQueuedPackets: limits.maxQueuedPackets,
-            replacesQueuedSends: limits.replacesQueuedSends
+            replacesQueuedSends: limits.replacesQueuedSends,
+            diagnosticsLabel: profile.rawValue
         )
         queuedUnreliableSenders[profile] = sender
         return sender

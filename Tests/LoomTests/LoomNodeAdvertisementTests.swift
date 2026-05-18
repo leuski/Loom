@@ -43,4 +43,78 @@ struct LoomNodeAdvertisementTests {
 
         #expect(updated.hostName == "existing.local")
     }
+
+    @Test("Initial authenticated Bonjour advertisement includes ready direct transports")
+    func initialAuthenticatedBonjourAdvertisementIncludesReadyDirectTransports() {
+        let advertisement = LoomPeerAdvertisement(
+            deviceID: UUID(),
+            deviceType: .mac
+        )
+
+        let initial = LoomNode.advertisement(
+            advertisement,
+            withDirectTransportPorts: [
+                .udp: 1234,
+                .quic: 5678,
+            ],
+            serviceName: "Mirage Host"
+        )
+
+        #expect(Set(initial.directTransports.map(\.transportKind)) == [.udp, .quic])
+        #expect(initial.directTransports.contains { $0.transportKind == .tcp } == false)
+    }
+
+    @Test("Bonjour TCP update preserves previously advertised direct transports")
+    func bonjourTCPUpdatePreservesPreviouslyAdvertisedDirectTransports() {
+        let advertisement = LoomPeerAdvertisement(
+            deviceID: UUID(),
+            deviceType: .mac
+        )
+        let initial = LoomNode.advertisement(
+            advertisement,
+            withDirectTransportPorts: [
+                .udp: 1234,
+                .quic: 5678,
+            ],
+            serviceName: "Mirage Host"
+        )
+
+        let updated = LoomNode.advertisement(
+            initial,
+            withDirectTransportPorts: [
+                .udp: 1234,
+                .quic: 5678,
+                .tcp: 9012,
+            ],
+            serviceName: "Mirage Host"
+        )
+
+        #expect(Set(updated.directTransports.map(\.transportKind)) == [.tcp, .udp, .quic])
+        #expect(updated.directTransports.first { $0.transportKind == .udp }?.port == 1234)
+        #expect(updated.directTransports.first { $0.transportKind == .quic }?.port == 5678)
+        #expect(updated.directTransports.first { $0.transportKind == .tcp }?.port == 9012)
+    }
+
+    @Test("TCP-only Bonjour advertisement gains TCP after service port is known")
+    func tcpOnlyBonjourAdvertisementGainsTCPAfterServicePortIsKnown() {
+        let advertisement = LoomPeerAdvertisement(
+            deviceID: UUID(),
+            deviceType: .mac
+        )
+
+        let initial = LoomNode.advertisement(
+            advertisement,
+            withDirectTransportPorts: [:],
+            serviceName: "Mirage Host"
+        )
+        let updated = LoomNode.advertisement(
+            initial,
+            withDirectTransportPorts: [.tcp: 9012],
+            serviceName: "Mirage Host"
+        )
+
+        #expect(initial.directTransports.isEmpty)
+        #expect(updated.directTransports.map(\.transportKind) == [.tcp])
+        #expect(updated.directTransports.first?.port == 9012)
+    }
 }

@@ -143,6 +143,38 @@ struct LoomDiscoveryTests {
     }
 
     @MainActor
+    @Test("Discovery prefers a transport-capable candidate over an equivalent candidate without direct transports")
+    func discoveryPrefersTransportCapableCandidate() throws {
+        let deviceID = UUID()
+        let discovery = LoomDiscovery()
+        let metadataOnlyPeer = makePeer(
+            id: deviceID,
+            name: "Studio Mac",
+            endpointPort: 5500,
+            directTransports: []
+        )
+        let transportPeer = makePeer(
+            id: deviceID,
+            name: "Studio Mac",
+            endpointPort: 6600,
+            directTransports: [
+                LoomDirectTransportAdvertisement(
+                    transportKind: .udp,
+                    port: 6600,
+                    pathKind: .wifi
+                ),
+            ]
+        )
+
+        discovery.upsertPeerForTesting(metadataOnlyPeer)
+        discovery.upsertPeerForTesting(transportPeer)
+
+        let preferredPeer = try #require(discovery.discoveredPeers.first)
+        #expect(preferredPeer.endpoint.debugDescription == transportPeer.endpoint.debugDescription)
+        #expect(preferredPeer.advertisement.directTransports == transportPeer.advertisement.directTransports)
+    }
+
+    @MainActor
     @Test("Discovery filters the local device identifier from emitted peers")
     func discoveryFiltersLocalDeviceID() {
         let localDeviceID = UUID()
@@ -301,6 +333,60 @@ struct LoomDiscoveryTests {
         )
 
         #expect(discovery.discoveredPeers.isEmpty)
+    }
+
+    @MainActor
+    @Test("Discovery preserves transport hints when a later Bonjour TXT update omits them")
+    func discoveryPreservesTransportHintsWhenLaterTXTUpdateOmitsThem() throws {
+        let discovery = LoomDiscovery()
+        let endpoint = NWEndpoint.hostPort(
+            host: "127.0.0.1",
+            port: NWEndpoint.Port(rawValue: 8802)!
+        )
+        let deviceID = UUID()
+        let udpTransport = LoomDirectTransportAdvertisement(
+            transportKind: .udp,
+            port: 6000,
+            pathKind: .wifi
+        )
+        let quicTransport = LoomDirectTransportAdvertisement(
+            transportKind: .quic,
+            port: 6001,
+            pathKind: .wifi
+        )
+        let tcpTransport = LoomDirectTransportAdvertisement(
+            transportKind: .tcp,
+            port: 6002,
+            pathKind: .wifi
+        )
+
+        discovery.upsertBonjourPeerForTesting(
+            peerName: "Studio Mac",
+            endpoint: endpoint,
+            txtRecord: LoomPeerAdvertisement(
+                deviceID: deviceID,
+                deviceType: .mac,
+                directTransports: [udpTransport, quicTransport, tcpTransport],
+                metadata: ["loom.role": "host"]
+            ).toTXTRecord()
+        )
+
+        discovery.upsertBonjourPeerForTesting(
+            peerName: "Studio Mac",
+            endpoint: endpoint,
+            txtRecord: LoomPeerAdvertisement(
+                deviceID: deviceID,
+                deviceType: .mac,
+                metadata: ["loom.role": "host"]
+            ).toTXTRecord()
+        )
+
+        let discoveredPeer = try #require(discovery.discoveredPeers.first)
+        #expect(discoveredPeer.advertisement.directTransports == [
+            tcpTransport,
+            quicTransport,
+            udpTransport,
+        ])
     }
 
     @MainActor

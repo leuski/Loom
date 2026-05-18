@@ -19,6 +19,7 @@ package final class LoomOrderedUnreliableSendQueue: @unchecked Sendable {
 
     private struct PendingSend {
         let data: Data
+        let enqueuedAt: TimeInterval
         let onComplete: @Sendable (NWError?) -> Void
     }
 
@@ -33,10 +34,22 @@ package final class LoomOrderedUnreliableSendQueue: @unchecked Sendable {
     private let maxOutstandingBytes: Int
     private let maxQueuedPackets: Int?
     private let replacesQueuedSends: Bool
+    private let diagnosticsLabel: String
     private var isClosed = false
     private var pendingSends: [PendingSend] = []
     private var outstandingPackets = 0
     private var outstandingBytes = 0
+    private var diagnosticEnqueuedCount: UInt64 = 0
+    private var diagnosticSentCount: UInt64 = 0
+    private var diagnosticCompletedCount: UInt64 = 0
+    private var diagnosticDroppedCount: UInt64 = 0
+    private var diagnosticErrorCount: UInt64 = 0
+    private var diagnosticPendingMax = 0
+    private var diagnosticOutstandingMax = 0
+    private var diagnosticQueuedBytesMax = 0
+    private var diagnosticQueueDwellSamplesMs: [Double] = []
+    private var diagnosticContentProcessedSamplesMs: [Double] = []
+    private var diagnosticLastLogAt: TimeInterval = 0
 
     package static func limits(for profile: LoomQueuedUnreliableSendProfile) -> Limits {
         let recommendedLimits = profile.recommendedLimits
@@ -54,13 +67,15 @@ package final class LoomOrderedUnreliableSendQueue: @unchecked Sendable {
         maxOutstandingPackets: Int = defaultMaxOutstandingPackets,
         maxOutstandingBytes: Int = defaultMaxOutstandingBytes,
         maxQueuedPackets: Int? = nil,
-        replacesQueuedSends: Bool = false
+        replacesQueuedSends: Bool = false,
+        diagnosticsLabel: String = "unlabeled"
     ) {
         self.queue = queue
         self.maxOutstandingPackets = max(1, maxOutstandingPackets)
         self.maxOutstandingBytes = max(1, maxOutstandingBytes)
         self.maxQueuedPackets = maxQueuedPackets.map { max(0, $0) }
         self.replacesQueuedSends = replacesQueuedSends
+        self.diagnosticsLabel = diagnosticsLabel
         sendOperation = { [connection] data, onComplete in
             connection.send(content: data, completion: .contentProcessed { error in
                 onComplete(error)
@@ -74,6 +89,7 @@ package final class LoomOrderedUnreliableSendQueue: @unchecked Sendable {
         maxOutstandingBytes: Int = defaultMaxOutstandingBytes,
         maxQueuedPackets: Int? = nil,
         replacesQueuedSends: Bool = false,
+        diagnosticsLabel: String = "unlabeled",
         sendOperation: @escaping @Sendable (Data, @escaping @Sendable (NWError?) -> Void) -> Void
     ) {
         self.queue = queue
@@ -81,11 +97,13 @@ package final class LoomOrderedUnreliableSendQueue: @unchecked Sendable {
         self.maxOutstandingBytes = max(1, maxOutstandingBytes)
         self.maxQueuedPackets = maxQueuedPackets.map { max(0, $0) }
         self.replacesQueuedSends = replacesQueuedSends
+        self.diagnosticsLabel = diagnosticsLabel
         self.sendOperation = sendOperation
     }
 
     package func enqueue(_ data: Data, onComplete: @escaping @Sendable (NWError?) -> Void) {
         queue.async { [self] in
+            let now = ProcessInfo.processInfo.systemUptime
             guard !isClosed else {
                 onComplete(.posix(.ECANCELED))
                 return
@@ -93,11 +111,15 @@ package final class LoomOrderedUnreliableSendQueue: @unchecked Sendable {
             if replacesQueuedSends {
                 let droppedSends = pendingSends
                 pendingSends.removeAll(keepingCapacity: true)
+                diagnosticDroppedCount &+= UInt64(droppedSends.count)
                 droppedSends.forEach { $0.onComplete(.posix(.ECANCELED)) }
             }
-            pendingSends.append(PendingSend(data: data, onComplete: onComplete))
+            pendingSends.append(PendingSend(data: data, enqueuedAt: now, onComplete: onComplete))
+            diagnosticEnqueuedCount &+= 1
+            updateDiagnosticMaxima()
             trimQueuedSendsIfNeeded()
             drainIfPossible()
+            logDiagnosticsIfNeeded(now: now)
         }
     }
 
@@ -107,6 +129,7 @@ package final class LoomOrderedUnreliableSendQueue: @unchecked Sendable {
             isClosed = true
             let droppedSends = pendingSends
             pendingSends.removeAll(keepingCapacity: false)
+            diagnosticDroppedCount &+= UInt64(droppedSends.count)
             droppedSends.forEach { $0.onComplete(.posix(.ECANCELED)) }
         }
     }
@@ -115,8 +138,10 @@ package final class LoomOrderedUnreliableSendQueue: @unchecked Sendable {
         guard let maxQueuedPackets else { return }
         while pendingSends.count > maxQueuedPackets {
             let droppedSend = pendingSends.removeFirst()
+            diagnosticDroppedCount &+= 1
             droppedSend.onComplete(.posix(.ECANCELED))
         }
+        updateDiagnosticMaxima()
     }
 
     private func drainIfPossible() {
@@ -134,6 +159,13 @@ package final class LoomOrderedUnreliableSendQueue: @unchecked Sendable {
             pendingSends.removeFirst()
             outstandingPackets += 1
             outstandingBytes += nextBytes
+            let sendStartedAt = ProcessInfo.processInfo.systemUptime
+            diagnosticSentCount &+= 1
+            recordDiagnosticSample(
+                &diagnosticQueueDwellSamplesMs,
+                max(0, sendStartedAt - nextSend.enqueuedAt) * 1000
+            )
+            updateDiagnosticMaxima()
 
             sendOperation(nextSend.data) { [weak self] error in
                 guard let self else {
@@ -141,10 +173,21 @@ package final class LoomOrderedUnreliableSendQueue: @unchecked Sendable {
                     return
                 }
                 self.queue.async {
+                    let completedAt = ProcessInfo.processInfo.systemUptime
                     self.outstandingPackets = max(0, self.outstandingPackets - 1)
                     self.outstandingBytes = max(0, self.outstandingBytes - nextBytes)
+                    self.diagnosticCompletedCount &+= 1
+                    if error != nil {
+                        self.diagnosticErrorCount &+= 1
+                    }
+                    self.recordDiagnosticSample(
+                        &self.diagnosticContentProcessedSamplesMs,
+                        max(0, completedAt - sendStartedAt) * 1000
+                    )
+                    self.updateDiagnosticMaxima()
                     nextSend.onComplete(error)
                     self.drainIfPossible()
+                    self.logDiagnosticsIfNeeded(now: completedAt)
                 }
             }
         }
@@ -156,5 +199,74 @@ package final class LoomOrderedUnreliableSendQueue: @unchecked Sendable {
                 total += pendingSend.data.count
             }
         }
+    }
+
+    private func updateDiagnosticMaxima() {
+        diagnosticPendingMax = max(diagnosticPendingMax, pendingSends.count)
+        diagnosticOutstandingMax = max(diagnosticOutstandingMax, outstandingPackets)
+        diagnosticQueuedBytesMax = max(diagnosticQueuedBytesMax, queuedBytesUnsafe())
+    }
+
+    private func recordDiagnosticSample(_ samples: inout [Double], _ value: Double) {
+        guard value.isFinite, value >= 0 else { return }
+        samples.append(value)
+        if samples.count > 256 {
+            samples.removeFirst(samples.count - 256)
+        }
+    }
+
+    private func logDiagnosticsIfNeeded(now: TimeInterval) {
+        guard LoomLogger.isEnabled(.transport) else { return }
+        if diagnosticLastLogAt == 0 {
+            diagnosticLastLogAt = now
+            return
+        }
+        guard now - diagnosticLastLogAt >= 1 else { return }
+        guard diagnosticEnqueuedCount > 0 ||
+            diagnosticSentCount > 0 ||
+            diagnosticCompletedCount > 0 ||
+            diagnosticDroppedCount > 0 ||
+            diagnosticErrorCount > 0 else {
+            diagnosticLastLogAt = now
+            return
+        }
+        LoomLogger.transport(
+            "Unreliable send queue diagnostics profile=\(diagnosticsLabel) " +
+                "enqueued=\(diagnosticEnqueuedCount) sent=\(diagnosticSentCount) " +
+                "completed=\(diagnosticCompletedCount) dropped=\(diagnosticDroppedCount) " +
+                "errors=\(diagnosticErrorCount) pendingMax=\(diagnosticPendingMax) " +
+                "outstandingMax=\(diagnosticOutstandingMax) queuedBytesMax=\(diagnosticQueuedBytesMax) " +
+                "queueDwellP99=\(formatMs(percentile(diagnosticQueueDwellSamplesMs, 0.99)))ms " +
+                "contentProcessedP99=\(formatMs(percentile(diagnosticContentProcessedSamplesMs, 0.99)))ms"
+        )
+        diagnosticEnqueuedCount = 0
+        diagnosticSentCount = 0
+        diagnosticCompletedCount = 0
+        diagnosticDroppedCount = 0
+        diagnosticErrorCount = 0
+        diagnosticPendingMax = pendingSends.count
+        diagnosticOutstandingMax = outstandingPackets
+        diagnosticQueuedBytesMax = queuedBytesUnsafe()
+        diagnosticQueueDwellSamplesMs.removeAll(keepingCapacity: true)
+        diagnosticContentProcessedSamplesMs.removeAll(keepingCapacity: true)
+        diagnosticLastLogAt = now
+    }
+
+    private func queuedBytesUnsafe() -> Int {
+        pendingSends.reduce(into: outstandingBytes) { total, pendingSend in
+            total += pendingSend.data.count
+        }
+    }
+
+    private func percentile(_ values: [Double], _ percentile: Double) -> Double {
+        guard !values.isEmpty else { return 0 }
+        let sorted = values.sorted()
+        let clamped = Swift.max(0, Swift.min(1, percentile))
+        let index = Int((Double(sorted.count - 1) * clamped).rounded(.up))
+        return sorted[Swift.min(Swift.max(0, index), sorted.count - 1)]
+    }
+
+    private func formatMs(_ value: Double) -> String {
+        value.formatted(.number.precision(.fractionLength(1)))
     }
 }

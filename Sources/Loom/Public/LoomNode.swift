@@ -74,7 +74,7 @@ public final class LoomNode {
             directListenerPorts[.tcp] = port
             publishedAdvertisement = Self.advertisement(
                 advertisement,
-                withDirectTransportPorts: [.tcp: port],
+                withDirectTransportPorts: directTransportPorts(advertiserTCPPort: nil),
                 serviceName: serviceName
             )
             return port
@@ -90,11 +90,13 @@ public final class LoomNode {
         let port = try await advertiser.start(port: configuration.controlPort) { connection in
             onSession(LoomSession(connection: connection))
         }
-        publishedAdvertisement = Self.advertisement(
+        let publishedAdvertisement = Self.advertisement(
             advertisement,
-            withDirectTransportPorts: [.tcp: port],
+            withDirectTransportPorts: directTransportPorts(advertiserTCPPort: port),
             serviceName: serviceName
         )
+        self.publishedAdvertisement = publishedAdvertisement
+        await advertiser.updateAdvertisement(publishedAdvertisement)
         return port
     }
 
@@ -119,10 +121,8 @@ public final class LoomNode {
     public func updateAdvertisement(_ advertisement: LoomPeerAdvertisement) async {
         // Preserve Loom-managed direct transport ports when the caller provides
         // an advertisement without them (e.g. Mirage updating metadata only).
-        var ports = directListenerPorts
-        if let bonjourPort = await advertiser?.port {
-            ports[.tcp] = bonjourPort
-        }
+        let bonjourPort = await advertiser?.port
+        let ports = directTransportPorts(advertiserTCPPort: bonjourPort)
         let merged = Self.advertisement(
             advertisement,
             withDirectTransportPorts: ports,
@@ -253,9 +253,43 @@ public final class LoomNode {
             // Fails fast at startup if Keychain is unavailable.
             _ = try await MainActor.run { try identityManager.currentIdentity() }
             let baseHello = try await helloProvider()
+            var ports: [LoomTransportKind: UInt16] = [:]
+
+            // Start datagram-capable direct listeners before publishing Bonjour.
+            // Otherwise clients can discover a valid local service with no UDP
+            // hint and lock the whole session onto TCP before the TXT update arrives.
+            if configuration.enabledDirectTransports.contains(.udp) {
+                let udpPort = try await startAuthenticatedDirectListener(
+                    transportKind: .udp,
+                    requestedPort: configuration.udpPort,
+                    identityManager: identityManager,
+                    encryptionPolicy: encryptionPolicy,
+                    helloProvider: helloProvider,
+                    onSession: onSession
+                )
+                ports[.udp] = udpPort
+            }
+
+            if configuration.enabledDirectTransports.contains(.quic) {
+                let quicPort = try await startAuthenticatedDirectListener(
+                    transportKind: .quic,
+                    requestedPort: configuration.quicPort,
+                    identityManager: identityManager,
+                    encryptionPolicy: encryptionPolicy,
+                    helloProvider: helloProvider,
+                    onSession: onSession
+                )
+                ports[.quic] = quicPort
+            }
+
+            let initialBonjourAdvertisement = Self.advertisement(
+                baseHello.advertisement,
+                withDirectTransportPorts: ports,
+                serviceName: serviceName
+            )
             let port = try await startAdvertising(
                 serviceName: serviceName,
-                advertisement: baseHello.advertisement
+                advertisement: initialBonjourAdvertisement
             ) { [weak self] rawSession in
                 guard let self else { return }
                 let session = LoomAuthenticatedSession(rawSession: rawSession, role: .receiver, transportKind: .tcp)
@@ -278,113 +312,64 @@ public final class LoomNode {
                 }
             }
 
-            var ports: [LoomTransportKind: UInt16] = [.tcp: port]
-            await updateAdvertisement(
-                Self.advertisement(
-                    baseHello.advertisement,
-                    withDirectTransportPorts: ports,
-                    serviceName: advertisingServiceName
-                )
-            )
-
-            // Start a separate UDP listener for actual session transport.
-            // The Bonjour TCP listener above is only for discovery/permissions —
-            // NWListener with Bonjour service registration doesn't accept
-            // application-layer UDP datagrams.
-            if configuration.enabledDirectTransports.contains(.udp) {
-                let udpListener = LoomDirectListener(
-                    transportKind: .udp,
-                    enablePeerToPeer: configuration.enablePeerToPeer
-                )
-                let udpPort = try await udpListener.start(port: configuration.udpPort) { [weak self] connection in
-                    guard let self else { return }
-                    let session = LoomAuthenticatedSession(
-                        rawSession: LoomSession(connection: connection),
-                        role: .receiver,
-                        transportKind: .udp
-                    )
-                    Task {
-                        do {
-                            let hello = try await helloProvider()
-                            _ = try await session.start(
-                                localHello: hello,
-                                identityManager: identityManager,
-                                trustProvider: self.trustProvider,
-                                encryptionPolicy: encryptionPolicy
-                            )
-                            onSession(session)
-                        } catch {
-                            LoomLogger.session(
-                                "Authenticated udp listener session failed for \(serviceName): \(error)"
-                            )
-                            await session.cancel()
-                        }
-                    }
-                }
-                directListeners[.udp] = udpListener
-                directListenerPorts[.udp] = udpPort
-                ports[.udp] = udpPort
-                await updateAdvertisement(
-                    Self.advertisement(
-                        baseHello.advertisement,
-                        withDirectTransportPorts: ports,
-                        serviceName: advertisingServiceName
-                    )
-                )
-            }
-
-            guard configuration.enabledDirectTransports.contains(.quic) else {
-                try await startOverlayProbeServer(serviceName: serviceName)
-                return ports
-            }
-
-            let quicListener = LoomDirectListener(
-                transportKind: .quic,
-                enablePeerToPeer: configuration.enablePeerToPeer,
-                quicALPN: configuration.quicALPN
-            )
-            let requestedQUICPort = configuration.quicPort
-            let quicPort = try await quicListener.start(port: requestedQUICPort) { [weak self] connection in
-                guard let self else { return }
-                let session = LoomAuthenticatedSession(
-                    rawSession: LoomSession(connection: connection),
-                    role: .receiver,
-                    transportKind: .quic
-                )
-                Task {
-                    do {
-                        let hello = try await helloProvider()
-                        _ = try await session.start(
-                            localHello: hello,
-                            identityManager: identityManager,
-                            trustProvider: self.trustProvider,
-                            encryptionPolicy: encryptionPolicy
-                        )
-                        onSession(session)
-                    } catch {
-                        LoomLogger.session(
-                            "Authenticated quic listener session failed for \(serviceName): \(error)"
-                        )
-                        await session.cancel()
-                    }
-                }
-            }
-            directListeners[.quic] = quicListener
-            directListenerPorts[.quic] = quicPort
-            ports[.quic] = quicPort
-            await updateAdvertisement(
-                Self.advertisement(
-                    baseHello.advertisement,
-                    withDirectTransportPorts: ports,
-                    serviceName: advertisingServiceName
-                )
-            )
+            ports[.tcp] = port
             try await startOverlayProbeServer(serviceName: serviceName)
             return ports
         } catch {
             await stopAdvertising()
             throw error
         }
+    }
+
+    private func startAuthenticatedDirectListener(
+        transportKind: LoomTransportKind,
+        requestedPort: UInt16,
+        identityManager: LoomIdentityManager,
+        encryptionPolicy: LoomSessionEncryptionPolicy,
+        helloProvider: @escaping @Sendable () async throws -> LoomSessionHelloRequest,
+        onSession: @escaping @Sendable (LoomAuthenticatedSession) -> Void
+    ) async throws -> UInt16 {
+        let listener = LoomDirectListener(
+            transportKind: transportKind,
+            enablePeerToPeer: configuration.enablePeerToPeer,
+            quicALPN: transportKind == .quic ? configuration.quicALPN : []
+        )
+        let port = try await listener.start(port: requestedPort) { [weak self] connection in
+            guard let self else { return }
+            let session = LoomAuthenticatedSession(
+                rawSession: LoomSession(connection: connection),
+                role: .receiver,
+                transportKind: transportKind
+            )
+            Task {
+                do {
+                    let hello = try await helloProvider()
+                    _ = try await session.start(
+                        localHello: hello,
+                        identityManager: identityManager,
+                        trustProvider: self.trustProvider,
+                        encryptionPolicy: encryptionPolicy
+                    )
+                    onSession(session)
+                } catch {
+                    LoomLogger.session(
+                        "Authenticated \(transportKind.rawValue) listener session failed: \(error)"
+                    )
+                    await session.cancel()
+                }
+            }
+        }
+        directListeners[transportKind] = listener
+        directListenerPorts[transportKind] = port
+        return port
+    }
+
+    private func directTransportPorts(advertiserTCPPort: UInt16?) -> [LoomTransportKind: UInt16] {
+        var ports = directListenerPorts
+        if let advertiserTCPPort {
+            ports[.tcp] = advertiserTCPPort
+        }
+        return ports
     }
 
     private func startOverlayProbeServer(serviceName: String) async throws {

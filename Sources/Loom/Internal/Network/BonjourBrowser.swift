@@ -252,14 +252,14 @@ public final class LoomDiscovery {
         txtRecord: [String: String],
         resolvedAddresses: [NWEndpoint.Host] = []
     ) {
-        let advertisement = LoomPeerAdvertisement.from(txtRecord: txtRecord)
+        let decodedAdvertisement = LoomPeerAdvertisement.from(txtRecord: txtRecord)
         if !txtRecord.isEmpty {
             LoomLogger.discovery(
-                "Peer metadata \(peerName): did=\(advertisement.deviceID?.uuidString ?? "nil") type=\(advertisement.deviceType?.rawValue ?? "unknown") keys=\(txtRecord.keys.sorted())"
+                "Peer metadata \(peerName): did=\(decodedAdvertisement.deviceID?.uuidString ?? "nil") type=\(decodedAdvertisement.deviceType?.rawValue ?? "unknown") keys=\(txtRecord.keys.sorted())"
             )
         }
 
-        guard let peerID = advertisement.deviceID else {
+        guard let peerID = decodedAdvertisement.deviceID else {
             removePeer(for: endpoint)
             return
         }
@@ -269,6 +269,11 @@ public final class LoomDiscovery {
             return
         }
 
+        let advertisement = mergeTransportHints(
+            from: decodedAdvertisement,
+            endpoint: endpoint,
+            peerID: peerID
+        )
         let normalizedAdvertisement = LoomPeerAdvertisement(
             protocolVersion: advertisement.protocolVersion,
             deviceID: advertisement.deviceID,
@@ -290,6 +295,43 @@ public final class LoomDiscovery {
         )
 
         storeCandidate(candidate, for: endpoint, peerID: peerID)
+    }
+
+    private func mergeTransportHints(
+        from advertisement: LoomPeerAdvertisement,
+        endpoint: NWEndpoint,
+        peerID: UUID
+    ) -> LoomPeerAdvertisement {
+        guard let existingAdvertisement = peerCandidatesByDeviceID[peerID]?[endpoint]?.advertisement else {
+            return advertisement
+        }
+
+        var transportsByKind = existingAdvertisement.directTransports.reduce(
+            into: [LoomTransportKind: LoomDirectTransportAdvertisement]()
+        ) { result, transport in
+            result[transport.transportKind] = transport
+        }
+        for transport in advertisement.directTransports {
+            transportsByKind[transport.transportKind] = transport
+        }
+
+        let mergedTransports = LoomTransportKind.allCases.compactMap { transportsByKind[$0] }
+        guard mergedTransports != advertisement.directTransports else {
+            return advertisement
+        }
+
+        return LoomPeerAdvertisement(
+            protocolVersion: advertisement.protocolVersion,
+            deviceID: advertisement.deviceID,
+            identityKeyID: advertisement.identityKeyID,
+            deviceType: advertisement.deviceType,
+            modelIdentifier: advertisement.modelIdentifier,
+            iconName: advertisement.iconName,
+            machineFamily: advertisement.machineFamily,
+            hostName: advertisement.hostName,
+            directTransports: mergedTransports,
+            metadata: advertisement.metadata
+        )
     }
 
     private func removePeer(for endpoint: NWEndpoint) {
