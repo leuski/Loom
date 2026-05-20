@@ -72,15 +72,11 @@ package enum LoomNetworkPathClassifier {
         supportsIPv4: Bool,
         supportsIPv6: Bool
     ) -> LoomNetworkPathSnapshot {
-        let sortedNames = interfaceNames
-            .map { $0.lowercased() }
-            .sorted()
-        let hasAWDLInterface = sortedNames.contains { $0.hasPrefix("awdl") }
-        let hasOverlayInterface = sortedNames.contains { $0.hasPrefix("utun") }
+        let interfaces = InterfaceSummary(interfaceNames)
         let kind: LoomNetworkPathKind
-        if hasAWDLInterface && usesOther {
+        if interfaces.hasProximity {
             kind = .awdl
-        } else if hasOverlayInterface && usesOther {
+        } else if interfaces.hasOverlay {
             kind = .overlay
         } else if usesWiFi {
             kind = .wifi
@@ -90,6 +86,8 @@ package enum LoomNetworkPathClassifier {
             kind = .cellular
         } else if usesLoopback {
             kind = .loopback
+        } else if interfaces.hasBridge {
+            kind = .wired
         } else if usesOther {
             kind = .other
         } else {
@@ -99,7 +97,7 @@ package enum LoomNetworkPathClassifier {
         let signature =
             "status=\(status)" +
             "|kind=\(kind.rawValue)" +
-            "|if=\(sortedNames.joined(separator: ","))" +
+            "|if=\(interfaces.names.joined(separator: ","))" +
             "|exp=\(isExpensive)" +
             "|con=\(isConstrained)" +
             "|v4=\(supportsIPv4)" +
@@ -109,7 +107,7 @@ package enum LoomNetworkPathClassifier {
             kind: kind,
             status: status,
             signature: signature,
-            interfaceNames: sortedNames,
+            interfaceNames: interfaces.names,
             isExpensive: isExpensive,
             isConstrained: isConstrained,
             supportsIPv4: supportsIPv4,
@@ -120,5 +118,27 @@ package enum LoomNetworkPathClassifier {
             usesLoopback: usesLoopback,
             usesOther: usesOther
         )
+    }
+
+    private struct InterfaceSummary {
+        let names: [String]
+        let hasApplePrivateNCM: Bool
+        let hasAWDL: Bool
+        let hasLowLatencyWireless: Bool
+        let hasBridge: Bool
+        let hasOverlay: Bool
+        let hasProximity: Bool
+
+        init(_ interfaceNames: [String]) {
+            names = interfaceNames
+                .map { $0.lowercased() }
+                .sorted()
+            hasApplePrivateNCM = names.contains { $0.hasPrefix("anpi") }
+            hasAWDL = names.contains { $0.hasPrefix("awdl") }
+            hasLowLatencyWireless = names.contains { $0.hasPrefix("llw") }
+            hasBridge = names.contains { $0.hasPrefix("bridge") }
+            hasOverlay = names.contains { $0.hasPrefix("utun") }
+            hasProximity = hasApplePrivateNCM || hasAWDL || hasLowLatencyWireless
+        }
     }
 }

@@ -429,9 +429,20 @@ public final class LoomDiscovery {
     }
 
     /// Force a discovery refresh.
-    public func refresh() {
+    public func refresh(forceRestart: Bool = false, reason: String? = nil) {
         guard enableBonjour else {
             stopDiscovery()
+            return
+        }
+
+        if forceRestart {
+            if let reason, !reason.isEmpty {
+                LoomLogger.discovery("Restarting discovery: \(reason)")
+            } else {
+                LoomLogger.discovery("Restarting discovery")
+            }
+            stopDiscovery()
+            startDiscovery()
             return
         }
 
@@ -491,6 +502,10 @@ public final class LoomDiscovery {
             return
         }
         let discoveredInterfaces = mergedDiscoveredInterfaces(from: candidates.values)
+        let resolvedAddresses = mergedResolvedAddresses(
+            from: candidates.values,
+            preferredCandidate: preferredCandidate
+        )
 
         removeProjectedPeers(forDeviceID: peerID)
         let projections = LoomHostCatalogCodec.projections(
@@ -505,11 +520,42 @@ public final class LoomDiscovery {
                 deviceType: preferredCandidate.deviceType,
                 endpoint: preferredCandidate.endpoint,
                 advertisement: projection.advertisement,
-                resolvedAddresses: preferredCandidate.resolvedAddresses,
+                resolvedAddresses: resolvedAddresses,
                 discoveredInterfaces: discoveredInterfaces
             )
         }
         updatePeersList()
+    }
+
+    private func mergedResolvedAddresses(
+        from candidates: Dictionary<NWEndpoint, LoomHostDiscoveryCandidate>.Values,
+        preferredCandidate: LoomHostDiscoveryCandidate
+    ) -> [NWEndpoint.Host] {
+        var resolvedAddresses: [NWEndpoint.Host] = []
+        var seenKeys: Set<String> = []
+
+        func append(_ hosts: [NWEndpoint.Host]) {
+            for host in hosts {
+                let key = host.debugDescription.lowercased()
+                guard seenKeys.insert(key).inserted else {
+                    continue
+                }
+                resolvedAddresses.append(host)
+            }
+        }
+
+        append(preferredCandidate.resolvedAddresses)
+
+        let remainingCandidates = candidates
+            .filter { $0.endpoint.debugDescription != preferredCandidate.endpoint.debugDescription }
+            .sorted { lhs, rhs in
+                isPreferredPeer(lhs, rhs)
+            }
+        for candidate in remainingCandidates {
+            append(candidate.resolvedAddresses)
+        }
+
+        return resolvedAddresses
     }
 
     private func mergedDiscoveredInterfaces(

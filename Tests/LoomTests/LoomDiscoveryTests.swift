@@ -256,6 +256,115 @@ struct LoomDiscoveryTests {
     }
 
     @MainActor
+    @Test("Discovery merges resolved addresses from same-device Bonjour candidates")
+    func discoveryMergesResolvedAddressesFromSameDeviceCandidates() throws {
+        let deviceID = UUID()
+        let discovery = LoomDiscovery()
+        let wifiAddress = try #require(IPv4Address("192.168.1.50"))
+        let duplicateWifiAddress = try #require(IPv4Address("192.168.1.50"))
+        let awdlAddress = try #require(IPv6Address("fe80::1%awdl0"))
+        let anpiAddress = try #require(IPv6Address("fe80::2%anpi0"))
+        let wifiPeer = makePeer(
+            id: deviceID,
+            name: "Studio Mac",
+            endpointPort: 6600,
+            directTransports: [
+                LoomDirectTransportAdvertisement(
+                    transportKind: .udp,
+                    port: 6600,
+                    pathKind: .wifi
+                ),
+            ],
+            resolvedAddresses: [
+                .ipv4(wifiAddress),
+                .ipv6(anpiAddress),
+            ]
+        )
+        let awdlPeer = makePeer(
+            id: deviceID,
+            name: "Studio Mac",
+            endpointPort: 7700,
+            directTransports: [
+                LoomDirectTransportAdvertisement(
+                    transportKind: .tcp,
+                    port: 7700,
+                    pathKind: .awdl
+                ),
+            ],
+            resolvedAddresses: [
+                .ipv6(awdlAddress),
+                .ipv4(duplicateWifiAddress),
+            ]
+        )
+
+        discovery.upsertPeerForTesting(wifiPeer)
+        discovery.upsertPeerForTesting(awdlPeer)
+
+        let preferredPeer = try #require(discovery.discoveredPeers.first)
+        #expect(preferredPeer.endpoint.debugDescription == wifiPeer.endpoint.debugDescription)
+        #expect(preferredPeer.resolvedAddresses.map(\.debugDescription) == [
+            NWEndpoint.Host.ipv4(wifiAddress).debugDescription,
+            NWEndpoint.Host.ipv6(anpiAddress).debugDescription,
+            NWEndpoint.Host.ipv6(awdlAddress).debugDescription,
+        ])
+    }
+
+    @MainActor
+    @Test("Discovery drops resolved addresses from removed same-device candidates")
+    func discoveryRemovesResolvedAddressesFromRemovedSameDeviceCandidate() throws {
+        let deviceID = UUID()
+        let discovery = LoomDiscovery()
+        let wifiAddress = try #require(IPv4Address("192.168.1.50"))
+        let awdlAddress = try #require(IPv6Address("fe80::1%awdl0"))
+        let wifiPeer = makePeer(
+            id: deviceID,
+            name: "Studio Mac",
+            endpointPort: 6600,
+            directTransports: [
+                LoomDirectTransportAdvertisement(
+                    transportKind: .udp,
+                    port: 6600,
+                    pathKind: .wifi
+                ),
+            ],
+            resolvedAddresses: [.ipv4(wifiAddress)],
+            discoveredInterfaces: [
+                LoomDiscoveredInterface(name: "en0", type: .wifi, index: 8),
+            ]
+        )
+        let awdlPeer = makePeer(
+            id: deviceID,
+            name: "Studio Mac",
+            endpointPort: 7700,
+            directTransports: [
+                LoomDirectTransportAdvertisement(
+                    transportKind: .tcp,
+                    port: 7700,
+                    pathKind: .awdl
+                ),
+            ],
+            resolvedAddresses: [.ipv6(awdlAddress)],
+            discoveredInterfaces: [
+                LoomDiscoveredInterface(name: "awdl0", type: .other, index: 12),
+            ]
+        )
+
+        discovery.upsertPeerForTesting(wifiPeer)
+        discovery.upsertPeerForTesting(awdlPeer)
+        discovery.removePeerForTesting(endpoint: awdlPeer.endpoint)
+
+        let fallbackPeer = try #require(discovery.discoveredPeers.first)
+        #expect(fallbackPeer.endpoint.debugDescription == wifiPeer.endpoint.debugDescription)
+        #expect(fallbackPeer.resolvedAddresses.map(\.debugDescription) == [
+            NWEndpoint.Host.ipv4(wifiAddress).debugDescription,
+        ])
+        #expect(fallbackPeer.discoveredInterfaces.map(\.name) == ["en0"])
+
+        discovery.removePeerForTesting(endpoint: wifiPeer.endpoint)
+        #expect(discovery.discoveredPeers.isEmpty)
+    }
+
+    @MainActor
     @Test("Discovery filters the local device identifier from emitted peers")
     func discoveryFiltersLocalDeviceID() {
         let localDeviceID = UUID()
@@ -516,6 +625,7 @@ struct LoomDiscoveryTests {
         name: String,
         endpointPort: UInt16,
         directTransports: [LoomDirectTransportAdvertisement],
+        resolvedAddresses: [NWEndpoint.Host] = [],
         discoveredInterfaces: [LoomDiscoveredInterface] = []
     ) -> LoomPeer {
         LoomPeer(
@@ -531,6 +641,7 @@ struct LoomDiscoveryTests {
                 deviceType: .mac,
                 directTransports: directTransports
             ),
+            resolvedAddresses: resolvedAddresses,
             discoveredInterfaces: discoveredInterfaces
         )
     }
