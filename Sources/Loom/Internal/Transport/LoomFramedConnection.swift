@@ -117,8 +117,7 @@ package actor LoomFramedConnection: LoomSessionTransport {
                     )
                 case .waiting(let error):
                     LoomLogger.transport("TCP/QUIC connection waiting: \(error)")
-                    if case .posix(let code) = error,
-                       ([.ENETDOWN, .EHOSTUNREACH, .ENETUNREACH] as [POSIXErrorCode]).contains(code) {
+                    if Self.shouldFailAfterWaiting(error) {
                         DispatchQueue.global().asyncAfter(deadline: .now() + 2) {
                             completion.complete(.failure(LoomError.connectionFailed(LoomConnectionFailure.classify(error))))
                         }
@@ -130,6 +129,11 @@ package actor LoomFramedConnection: LoomSessionTransport {
             // Handler is set — now start. All state transitions are captured.
             connection.start(queue: queue)
         }
+    }
+
+    package nonisolated static func shouldFailAfterWaiting(_ error: NWError) -> Bool {
+        guard case .posix(let code) = error else { return false }
+        return ([.ENETDOWN, .EHOSTUNREACH, .ENETUNREACH, .ENOTCONN] as [POSIXErrorCode]).contains(code)
     }
 
     package func sendFrame(_ data: Data) async throws {

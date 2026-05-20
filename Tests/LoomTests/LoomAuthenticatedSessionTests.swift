@@ -12,6 +12,20 @@ import Testing
 
 @Suite("Loom Authenticated Session", .serialized)
 struct LoomAuthenticatedSessionTests {
+    @Test("TCP and QUIC waiting policy fails fast for unreachable POSIX states")
+    func framedConnectionWaitingPolicyFailsFastForUnreachableStates() {
+        #expect(LoomFramedConnection.shouldFailAfterWaiting(.posix(.ENETDOWN)))
+        #expect(LoomFramedConnection.shouldFailAfterWaiting(.posix(.EHOSTUNREACH)))
+        #expect(LoomFramedConnection.shouldFailAfterWaiting(.posix(.ENETUNREACH)))
+        #expect(LoomFramedConnection.shouldFailAfterWaiting(.posix(.ENOTCONN)))
+    }
+
+    @Test("TCP and QUIC waiting policy keeps transient waiting states alive")
+    func framedConnectionWaitingPolicyKeepsTransientStatesAlive() {
+        #expect(!LoomFramedConnection.shouldFailAfterWaiting(.posix(.ECONNRESET)))
+        #expect(!LoomFramedConnection.shouldFailAfterWaiting(.tls(-9807)))
+    }
+
     @MainActor
     @Test("Hello validation rejects tampered ephemeral key shares")
     func tamperedEphemeralKeyShareRejected() async throws {
