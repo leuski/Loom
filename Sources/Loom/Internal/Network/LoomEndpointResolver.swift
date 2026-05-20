@@ -150,24 +150,22 @@ package enum LoomEndpointResolver {
         while let entry = cursor {
             switch entry.pointee.ai_family {
             case AF_INET:
-                var addr = entry.pointee.ai_addr.withMemoryRebound(
+                let addr = entry.pointee.ai_addr.withMemoryRebound(
                     to: sockaddr_in.self,
                     capacity: 1
                 ) { $0.pointee }
-                let ipv4Data = Data(bytes: &addr.sin_addr, count: MemoryLayout<in_addr>.size)
-                if let ipv4 = IPv4Address(ipv4Data) {
-                    LoomLogger.transport("Resolved \(hostname) → \(ipv4)")
-                    return .ipv4(ipv4)
+                if let host = LoomSocketAddressConverter.host(fromIPv4: addr) {
+                    LoomLogger.transport("Resolved \(hostname) → \(host)")
+                    return host
                 }
             case AF_INET6:
                 if ipv6Fallback == nil {
-                    var addr = entry.pointee.ai_addr.withMemoryRebound(
+                    let addr = entry.pointee.ai_addr.withMemoryRebound(
                         to: sockaddr_in6.self,
                         capacity: 1
                     ) { $0.pointee }
-                    let data = Data(bytes: &addr.sin6_addr, count: MemoryLayout<in6_addr>.size)
-                    if let ipv6 = IPv6Address(data) {
-                        ipv6Fallback = .ipv6(ipv6)
+                    if let host = LoomSocketAddressConverter.host(fromIPv6: addr) {
+                        ipv6Fallback = host
                     }
                 }
             default:

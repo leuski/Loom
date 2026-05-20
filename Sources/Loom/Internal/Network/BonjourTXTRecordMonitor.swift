@@ -301,17 +301,13 @@ final class BonjourTXTRecordMonitor: NSObject, NetServiceBrowserDelegate, NetSer
                 switch Int32(family) {
                 case AF_INET:
                     let addr = base.assumingMemoryBound(to: sockaddr_in.self).pointee
-                    var sin_addr = addr.sin_addr
-                    let data = Data(bytes: &sin_addr, count: MemoryLayout<in_addr>.size)
-                    if let ipv4 = IPv4Address(data) {
-                        ipv4Hosts.append(.ipv4(ipv4))
+                    if let host = LoomSocketAddressConverter.host(fromIPv4: addr) {
+                        ipv4Hosts.append(host)
                     }
                 case AF_INET6:
                     let addr = base.assumingMemoryBound(to: sockaddr_in6.self).pointee
-                    var sin6_addr = addr.sin6_addr
-                    let data = Data(bytes: &sin6_addr, count: MemoryLayout<in6_addr>.size)
-                    if let ipv6 = IPv6Address(data) {
-                        ipv6Hosts.append(.ipv6(ipv6))
+                    if let host = LoomSocketAddressConverter.host(fromIPv6: addr) {
+                        ipv6Hosts.append(host)
                     }
                 default:
                     break
