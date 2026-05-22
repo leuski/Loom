@@ -12,7 +12,7 @@ import Foundation
 package let loomProtocolMagic: UInt32 = 0x4C4F_4F4D // "LOOM"
 
 /// Protocol version
-package let loomProtocolVersion: UInt8 = 2
+package let loomProtocolVersion: UInt8 = 3
 package let loomSupportedFeatures: LoomFeatureSet = [
     .controlMessageRouting,
     .protocolNegotiation,

@@ -23,6 +23,7 @@ public struct LoomAuthenticatedSessionContext: Sendable, Codable, Equatable {
     public let peerAdvertisement: LoomPeerAdvertisement
     public let trustEvaluation: LoomTrustEvaluation
     public let transportKind: LoomTransportKind
+    public let transportDiagnostics: LoomTransportDiagnostics
     public let negotiatedFeatures: [String]
     public let sessionEncrypted: Bool
 
@@ -31,6 +32,7 @@ public struct LoomAuthenticatedSessionContext: Sendable, Codable, Equatable {
         peerAdvertisement: LoomPeerAdvertisement,
         trustEvaluation: LoomTrustEvaluation,
         transportKind: LoomTransportKind,
+        transportDiagnostics: LoomTransportDiagnostics? = nil,
         negotiatedFeatures: [String],
         sessionEncrypted: Bool = true
     ) {
@@ -38,8 +40,42 @@ public struct LoomAuthenticatedSessionContext: Sendable, Codable, Equatable {
         self.peerAdvertisement = peerAdvertisement
         self.trustEvaluation = trustEvaluation
         self.transportKind = transportKind
+        self.transportDiagnostics = transportDiagnostics ?? LoomTransportDiagnostics(
+            selectedTransportKind: transportKind,
+            nativeQUICSupported: false,
+            nativeQUICActive: false,
+            usableDatagramSize: nil,
+            serviceClass: nil,
+            receiveSemantics: "unknown"
+        )
         self.negotiatedFeatures = negotiatedFeatures
         self.sessionEncrypted = sessionEncrypted
+    }
+}
+
+/// Transport capability and selection diagnostics captured at authenticated-session setup.
+public struct LoomTransportDiagnostics: Sendable, Codable, Equatable {
+    public let selectedTransportKind: LoomTransportKind
+    public let nativeQUICSupported: Bool
+    public let nativeQUICActive: Bool
+    public let usableDatagramSize: Int?
+    public let serviceClass: String?
+    public let receiveSemantics: String
+
+    public init(
+        selectedTransportKind: LoomTransportKind,
+        nativeQUICSupported: Bool,
+        nativeQUICActive: Bool,
+        usableDatagramSize: Int?,
+        serviceClass: String?,
+        receiveSemantics: String
+    ) {
+        self.selectedTransportKind = selectedTransportKind
+        self.nativeQUICSupported = nativeQUICSupported
+        self.nativeQUICActive = nativeQUICActive
+        self.usableDatagramSize = usableDatagramSize
+        self.serviceClass = serviceClass
+        self.receiveSemantics = receiveSemantics
     }
 }
 
@@ -55,6 +91,8 @@ public struct LoomAuthenticatedSessionContext: Sendable, Codable, Equatable {
 public enum LoomQueuedUnreliableSendProfile: String, Sendable, Codable, CaseIterable {
     /// Keeps the underlying ordered unreliable queue shallow to favor latency.
     case interactiveMedia
+    /// Bounds media backlog more aggressively for bursty proximity links such as AWDL.
+    case proximityInteractiveMedia
     /// Keeps only the newest pending input payload when the transport is busy.
     case priorityInputRealtime
     /// Preserves a short FIFO window of realtime input while bounding stale backlog.
@@ -78,6 +116,12 @@ public enum LoomQueuedUnreliableSendProfile: String, Sendable, Codable, CaseIter
                 maxOutstandingPackets: 1024,
                 maxOutstandingBytes: 2 * 1024 * 1024
             )
+        case .proximityInteractiveMedia:
+            LoomQueuedUnreliableSendLimits(
+                maxOutstandingPackets: 384,
+                maxOutstandingBytes: 768 * 1024,
+                maxQueuedPackets: 128
+            )
         case .priorityInputRealtime:
             LoomQueuedUnreliableSendLimits(
                 maxOutstandingPackets: 1,
@@ -86,7 +130,8 @@ public enum LoomQueuedUnreliableSendProfile: String, Sendable, Codable, CaseIter
         case .priorityInputRealtimeSequenced:
             LoomQueuedUnreliableSendLimits(
                 maxOutstandingPackets: 8,
-                maxOutstandingBytes: 128 * 1024
+                maxOutstandingBytes: 128 * 1024,
+                maxQueuedPackets: 8
             )
         case .priorityInputContinuous:
             LoomQueuedUnreliableSendLimits(
@@ -111,13 +156,16 @@ public enum LoomQueuedUnreliableSendProfile: String, Sendable, Codable, CaseIter
 public struct LoomQueuedUnreliableSendLimits: Sendable, Equatable, Codable {
     public let maxOutstandingPackets: Int
     public let maxOutstandingBytes: Int
+    public let maxQueuedPackets: Int?
 
     public init(
         maxOutstandingPackets: Int,
-        maxOutstandingBytes: Int
+        maxOutstandingBytes: Int,
+        maxQueuedPackets: Int? = nil
     ) {
         self.maxOutstandingPackets = maxOutstandingPackets
         self.maxOutstandingBytes = maxOutstandingBytes
+        self.maxQueuedPackets = maxQueuedPackets
     }
 }
 
@@ -339,7 +387,7 @@ public actor LoomAuthenticatedSession: LoomSessionProtocol {
 
     /// Stable authenticated-session identifier for app-owned bookkeeping.
     public nonisolated let id: UUID
-    public let rawSession: LoomSession
+    public let rawSession: LoomSession?
     public let role: LoomSessionRole
     public let transportKind: LoomTransportKind
 
@@ -391,22 +439,60 @@ public actor LoomAuthenticatedSession: LoomSessionProtocol {
     private var recentlyClosedStreamIDs: [UInt16: CFAbsoluteTime] = [:]
     private let recentlyClosedStreamTTL: CFAbsoluteTime = 2.0
     private let recentlyClosedStreamMaxCount = 64
+    private let transportEndpointDescription: String
+    private let nativeQUICRemoteEndpoint: NWEndpoint?
+    private let transportServiceClassDescription: String?
+    private let transportUsableDatagramSize: Int?
 
     public init(
         rawSession: LoomSession,
         role: LoomSessionRole,
-        transportKind: LoomTransportKind
+        transportKind: LoomTransportKind,
+        serviceClass: NWParameters.ServiceClass? = nil
     ) {
         id = UUID()
         self.rawSession = rawSession
         self.role = role
         self.transportKind = transportKind
         switch transportKind {
-        case .tcp, .quic:
+        case .tcp:
             transport = LoomFramedConnection(connection: rawSession.connection)
         case .udp:
             transport = LoomReliableChannel(connection: rawSession.connection)
+        case .quic:
+            transport = LoomUnavailableSessionTransport(
+                message: "QUIC sessions require OS 26 native QUIC transport."
+            )
         }
+        transportEndpointDescription = rawSession.endpoint.debugDescription
+        nativeQUICRemoteEndpoint = nil
+        transportServiceClassDescription = serviceClass.map(Self.serviceClassDescription(_:))
+        transportUsableDatagramSize = transportKind == .udp ? Loom.defaultMaxPacketSize : nil
+        let (stream, continuation) = AsyncStream.makeStream(of: LoomMultiplexedStream.self)
+        incomingStreams = stream
+        incomingStreamContinuation = continuation
+        nextOutgoingStreamID = role == .initiator ? 1 : 2
+    }
+
+    @available(macOS 26.0, iOS 26.0, visionOS 26.0, tvOS 26.0, watchOS 26.0, *)
+    public init(
+        nativeQUICConnection: NetworkConnection<QUIC>,
+        role: LoomSessionRole,
+        remoteEndpoint: NWEndpoint? = nil,
+        serviceClass: NWParameters.ServiceClass? = nil
+    ) {
+        id = UUID()
+        rawSession = nil
+        self.role = role
+        transportKind = .quic
+        transport = LoomNativeQUICSessionTransport(
+            connection: nativeQUICConnection,
+            role: role
+        )
+        transportEndpointDescription = (remoteEndpoint ?? nativeQUICConnection.remoteEndpoint)?.debugDescription ?? "native-quic"
+        nativeQUICRemoteEndpoint = remoteEndpoint ?? nativeQUICConnection.remoteEndpoint
+        transportServiceClassDescription = serviceClass.map(Self.serviceClassDescription(_:))
+        transportUsableDatagramSize = LoomNativeQUICTransportFactory.defaultMaxDatagramFrameSize
         let (stream, continuation) = AsyncStream.makeStream(of: LoomMultiplexedStream.self)
         incomingStreams = stream
         incomingStreamContinuation = continuation
@@ -440,12 +526,51 @@ public actor LoomAuthenticatedSession: LoomSessionProtocol {
 
     /// Returns the latest remote endpoint observed for this session's transport.
     public var remoteEndpoint: NWEndpoint? {
-        currentRemoteEndpoint ?? currentPathSnapshot?.remoteEndpoint ?? rawSession.endpoint
+        currentRemoteEndpoint ?? currentPathSnapshot?.remoteEndpoint ?? rawSession?.endpoint ?? nativeQUICRemoteEndpoint
     }
 
     /// Returns the latest transport-path snapshot observed for this session.
     public var pathSnapshot: LoomSessionNetworkPathSnapshot? {
         currentPathSnapshot
+    }
+
+    private func transportDiagnosticsSnapshot() -> LoomTransportDiagnostics {
+        LoomTransportDiagnostics(
+            selectedTransportKind: transportKind,
+            nativeQUICSupported: LoomNode.nativeQUICAvailable,
+            nativeQUICActive: transportKind == .quic && rawSession == nil,
+            usableDatagramSize: transportUsableDatagramSize,
+            serviceClass: transportServiceClassDescription,
+            receiveSemantics: Self.receiveSemanticsDescription(transport.receiveSemantics)
+        )
+    }
+
+    private static func receiveSemanticsDescription(_ semantics: LoomSessionReceiveSemantics) -> String {
+        switch semantics {
+        case .singleLane:
+            "single-lane"
+        case .independentReliableAndUnreliable:
+            "independent-reliable-unreliable"
+        }
+    }
+
+    private static func serviceClassDescription(_ serviceClass: NWParameters.ServiceClass) -> String {
+        switch serviceClass {
+        case .bestEffort:
+            "best-effort"
+        case .background:
+            "background"
+        case .interactiveVideo:
+            "interactive-video"
+        case .interactiveVoice:
+            "interactive-voice"
+        case .responsiveData:
+            "responsive-data"
+        case .signaling:
+            "signaling"
+        @unknown default:
+            String(describing: serviceClass)
+        }
     }
 
     /// Creates an observation stream for transport-path changes on the underlying connection.
@@ -487,7 +612,7 @@ public actor LoomAuthenticatedSession: LoomSessionProtocol {
             let remoteHello = try await receiveRemoteHello()
             let validatedHello = try await helloValidator.validateDetailed(
                 remoteHello,
-                endpointDescription: rawSession.endpoint.debugDescription
+                endpointDescription: transportEndpointDescription
             )
             let peerIdentity = validatedHello.peerIdentity
             updateBootstrapProgress(phase: .remoteHelloReceived)
@@ -502,7 +627,7 @@ public actor LoomAuthenticatedSession: LoomSessionProtocol {
             case .required:
                 guard encryptionNegotiated else {
                     updateState(.failed("missing-session-encryption"))
-                    rawSession.cancel()
+                    rawSession?.cancel()
                     throw LoomError.protocolError("Peer does not support Loom authenticated session encryption.")
                 }
             case .optional:
@@ -520,7 +645,7 @@ public actor LoomAuthenticatedSession: LoomSessionProtocol {
             }
             if trustEvaluation.decision != .trusted {
                 updateState(.failed("denied"))
-                rawSession.cancel()
+                rawSession?.cancel()
                 throw LoomError.authenticationFailed
             }
 
@@ -539,6 +664,7 @@ public actor LoomAuthenticatedSession: LoomSessionProtocol {
                 peerAdvertisement: validatedHello.hello.advertisement,
                 trustEvaluation: trustEvaluation,
                 transportKind: transportKind,
+                transportDiagnostics: transportDiagnosticsSnapshot(),
                 negotiatedFeatures: negotiatedFeatures,
                 sessionEncrypted: encryptionNegotiated
             )
@@ -623,9 +749,9 @@ public actor LoomAuthenticatedSession: LoomSessionProtocol {
         }
         // TODO: Enable the priority input lane for remote transports after
         // congestion, NAT traversal, and path-health behavior are validated.
-        guard transportKind == .udp,
+        guard transportKind == .udp || transportKind == .quic,
               transport.receiveSemantics == .independentReliableAndUnreliable else {
-            throw LoomError.protocolError("Priority input lane is only available on local UDP transports.")
+            throw LoomError.protocolError("Priority input lane is only available on local datagram transports.")
         }
         guard Self.isLocalPriorityInputPath(
             pathSnapshot: currentPathSnapshot,
@@ -1195,6 +1321,10 @@ public actor LoomAuthenticatedSession: LoomSessionProtocol {
     private func configureTransportObserversIfNeeded() {
         guard !transportObserversConfigured else { return }
         transportObserversConfigured = true
+        guard let rawSession else {
+            currentRemoteEndpoint = nativeQUICRemoteEndpoint
+            return
+        }
         currentRemoteEndpoint = rawSession.endpoint
 
         if let path = rawSession.connection.currentPath {
@@ -1275,7 +1405,7 @@ public actor LoomAuthenticatedSession: LoomSessionProtocol {
         bootstrapProgressObservers.finish()
         pathObservers.finish()
         if cancelUnderlyingConnection {
-            rawSession.cancel()
+            rawSession?.cancel()
         }
     }
 

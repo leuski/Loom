@@ -56,6 +56,7 @@ public enum LoomDirectCandidateCollector {
         let tcpPort = listeningPorts[.tcp] ?? configuration.controlPort
 
         if configuration.enabledDirectTransports.contains(.quic),
+           LoomNode.nativeQUICAvailable,
            quicPort > 0 {
             let quicProbe = await LoomSTUNProbe.run(localPort: quicPort)
             if quicProbe.reachable,
@@ -265,7 +266,9 @@ public final class LoomConnectionCoordinator {
         policy: LoomDirectConnectionPolicy,
         hostOverride: String?
     ) -> [LoomConnectionTarget] {
-        let advertisedTransports = peer.advertisement.directTransports
+        let advertisedTransports = peer.advertisement.directTransports.filter { transport in
+            transport.transportKind != .quic || LoomNode.nativeQUICAvailable
+        }
         let transports = advertisedTransports.isEmpty
             ? [LoomDirectTransportAdvertisement(transportKind: .tcp, port: 0)]
             : advertisedTransports.sorted { lhs, rhs in
@@ -524,7 +527,7 @@ public final class LoomConnectionCoordinator {
         _ target: LoomConnectionTarget,
         session: LoomAuthenticatedSession
     ) {
-        guard let path = session.rawSession.connection.currentPath else {
+        guard let path = session.rawSession?.connection.currentPath else {
             LoomInstrumentation.record(
                 LoomStepEvent(
                     rawValue: "loom.connection.connected.\(target.source.rawValue).\(target.transportKind.rawValue).unknown"

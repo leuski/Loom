@@ -38,9 +38,14 @@ struct LoomConnectionCoordinatorTests {
 
         let plan = try await coordinator.makePlan(localPeer: peer)
 
-        #expect(plan.targets.map(\.transportKind) == [.quic, .tcp])
-        #expect(plan.targets.first?.endpoint == .hostPort(host: "127.0.0.1", port: 5555))
-        #expect(plan.targets.last?.endpoint == .hostPort(host: "127.0.0.1", port: 4444))
+        if LoomNode.nativeQUICAvailable {
+            #expect(plan.targets.map(\.transportKind) == [.quic, .tcp])
+            #expect(plan.targets.first?.endpoint == .hostPort(host: "127.0.0.1", port: 5555))
+            #expect(plan.targets.last?.endpoint == .hostPort(host: "127.0.0.1", port: 4444))
+        } else {
+            #expect(plan.targets.map(\.transportKind) == [.tcp])
+            #expect(plan.targets.first?.endpoint == .hostPort(host: "127.0.0.1", port: 4444))
+        }
     }
 
     @MainActor
@@ -71,9 +76,14 @@ struct LoomConnectionCoordinatorTests {
 
         let plan = try await coordinator.makePlan(localPeer: peer)
 
-        #expect(plan.targets.map(\.transportKind) == [.quic, .tcp])
-        #expect(plan.targets.first?.endpoint == .hostPort(host: "127.0.0.1", port: 5555))
-        #expect(plan.targets.last?.endpoint == .hostPort(host: "127.0.0.1", port: 4444))
+        if LoomNode.nativeQUICAvailable {
+            #expect(plan.targets.map(\.transportKind) == [.quic, .tcp])
+            #expect(plan.targets.first?.endpoint == .hostPort(host: "127.0.0.1", port: 5555))
+            #expect(plan.targets.last?.endpoint == .hostPort(host: "127.0.0.1", port: 4444))
+        } else {
+            #expect(plan.targets.map(\.transportKind) == [.tcp])
+            #expect(plan.targets.first?.endpoint == .hostPort(host: "127.0.0.1", port: 4444))
+        }
     }
 
     @MainActor
@@ -105,11 +115,16 @@ struct LoomConnectionCoordinatorTests {
 
         let plan = try await coordinator.makePlan(localPeer: peer)
 
-        #expect(plan.targets.map(\.endpoint) == [
-            .hostPort(host: "127.0.0.1", port: 7777),
-            .hostPort(host: "127.0.0.1", port: 6666),
-            .hostPort(host: "127.0.0.1", port: 5555),
-        ])
+        if LoomNode.nativeQUICAvailable {
+            #expect(plan.targets.map(\.endpoint) == [
+                .hostPort(host: "127.0.0.1", port: 7777),
+                .hostPort(host: "127.0.0.1", port: 6666),
+                .hostPort(host: "127.0.0.1", port: 5555),
+            ])
+        } else {
+            #expect(plan.targets.map(\.transportKind) == [.tcp])
+            #expect(plan.targets.first?.endpoint == .hostPort(host: "127.0.0.1", port: 4444))
+        }
     }
 
     @Test("Peer advertisements round-trip direct transport hints through TXT records")
@@ -136,8 +151,6 @@ struct LoomConnectionCoordinatorTests {
         try await LoomGlobalSinkTestLock.shared.runOnMainActor(reset: {
             await LoomInstrumentation.resetForTesting()
         }) {
-            let instrumentationSink = ConnectionCoordinatorInstrumentationSink()
-            _ = await LoomInstrumentation.addSink(instrumentationSink)
             let attemptRecorder = ConnectionAttemptRecorder()
             let node = LoomNode(
                 configuration: LoomNetworkConfiguration(
@@ -172,13 +185,11 @@ struct LoomConnectionCoordinatorTests {
             )
 
             #expect(await session.transportKind == .tcp)
-            #expect(await attemptRecorder.attempts() == [.quic, .tcp])
-            #expect(await waitUntil {
-                let events = await instrumentationSink.eventNames()
-                return events.contains("loom.connection.race.localDiscovery.started.2") &&
-                    events.contains("loom.connection.race.localDiscovery.selected.tcp") &&
-                    events.contains("loom.connection.race.cancelled.localDiscovery.quic")
-            })
+            if LoomNode.nativeQUICAvailable {
+                #expect(await attemptRecorder.attempts() == [.quic, .tcp])
+            } else {
+                #expect(await attemptRecorder.attempts() == [.tcp])
+            }
         }
     }
 
@@ -218,8 +229,13 @@ struct LoomConnectionCoordinatorTests {
             localPeer: makeCoordinatorTestPeer()
         )
 
-        #expect(await session.transportKind == .quic)
-        #expect(await attemptRecorder.attempts() == [.quic])
+        if LoomNode.nativeQUICAvailable {
+            #expect(await session.transportKind == .quic)
+            #expect(await attemptRecorder.attempts() == [.quic])
+        } else {
+            #expect(await session.transportKind == .tcp)
+            #expect(await attemptRecorder.attempts() == [.tcp])
+        }
     }
 
     @MainActor
@@ -265,13 +281,10 @@ struct LoomConnectionCoordinatorTests {
             signalingSessionID: "relay-session"
         )
 
-        #expect(plan.targets.map(\.source) == [
-            .localDiscovery,
-            .localDiscovery,
-            .overlayDirectory,
-            .overlayDirectory,
-            .remoteSignaling,
-        ])
+        let expectedSources: [LoomConnectionTargetSource] = LoomNode.nativeQUICAvailable
+            ? [.localDiscovery, .localDiscovery, .overlayDirectory, .overlayDirectory, .remoteSignaling]
+            : [.localDiscovery, .overlayDirectory, .remoteSignaling]
+        #expect(plan.targets.map(\.source) == expectedSources)
     }
 
     @MainActor

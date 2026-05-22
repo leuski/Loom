@@ -22,6 +22,7 @@ public final class LoomNode {
     private var advertisingServiceName: String?
     private var publishedAdvertisement: LoomPeerAdvertisement?
     private var directListeners: [LoomTransportKind: LoomDirectListener] = [:]
+    @ObservationIgnored private var nativeQUICDirectListenerStorage: Any?
     private var directListenerPorts: [LoomTransportKind: UInt16] = [:]
     private var overlayProbeServer: LoomOverlayProbeServer?
 
@@ -110,11 +111,17 @@ public final class LoomNode {
         let directListeners = self.directListeners.values
         self.directListeners.removeAll()
         self.directListenerPorts.removeAll()
+        let nativeQUICDirectListenerStorage = self.nativeQUICDirectListenerStorage
+        self.nativeQUICDirectListenerStorage = nil
 
         await overlayProbeServer?.stop()
         await advertiser?.stop()
         for listener in directListeners {
             await listener.stop()
+        }
+        if #available(macOS 26.0, iOS 26.0, visionOS 26.0, tvOS 26.0, watchOS 26.0, *),
+           let nativeQUICDirectListener = nativeQUICDirectListenerStorage as? LoomNativeQUICDirectListener {
+            await nativeQUICDirectListener.stop()
         }
     }
 
@@ -144,7 +151,8 @@ public final class LoomNode {
         LoomAuthenticatedSession(
             rawSession: LoomSession(connection: connection),
             role: role,
-            transportKind: transportKind
+            transportKind: transportKind,
+            serviceClass: transportKind == .udp ? configuration.directUDPServiceClass : nil
         )
     }
 
@@ -161,13 +169,33 @@ public final class LoomNode {
             enablePeerToPeer: enablePeerToPeer ?? configuration.enablePeerToPeer,
             requiredInterface: requiredInterface,
             requiredInterfaceType: requiredInterfaceType,
-            quicALPN: configuration.quicALPN
+            quicALPN: configuration.quicALPN,
+            udpServiceClass: configuration.directUDPServiceClass
         )
         if let requiredLocalPort, let port = NWEndpoint.Port(rawValue: requiredLocalPort) {
             parameters.requiredLocalEndpoint = .hostPort(host: .ipv4(.any), port: port)
             parameters.allowLocalEndpointReuse = true
         }
         return NWConnection(to: endpoint, using: parameters)
+    }
+
+    @available(macOS 26.0, iOS 26.0, visionOS 26.0, tvOS 26.0, watchOS 26.0, *)
+    public func makeNativeQUICConnection(
+        to endpoint: NWEndpoint,
+        enablePeerToPeer: Bool? = nil,
+        requiredInterface: NWInterface? = nil,
+        requiredInterfaceType: NWInterface.InterfaceType? = nil,
+        requiredLocalPort: UInt16? = nil
+    ) throws -> NetworkConnection<QUIC> {
+        try LoomNativeQUICTransportFactory.makeConnection(
+            to: endpoint,
+            enablePeerToPeer: enablePeerToPeer ?? configuration.enablePeerToPeer,
+            requiredInterface: requiredInterface,
+            requiredInterfaceType: requiredInterfaceType,
+            requiredLocalPort: requiredLocalPort,
+            quicALPN: configuration.quicALPN,
+            serviceClass: configuration.directUDPServiceClass
+        )
     }
 
     public func connect(
@@ -204,6 +232,35 @@ public final class LoomNode {
         let identityManager = self.identityManager ?? LoomIdentityManager.shared
 
         func attemptConnect(to target: NWEndpoint) async throws -> LoomAuthenticatedSession {
+            if transportKind == .quic {
+                guard #available(macOS 26.0, iOS 26.0, visionOS 26.0, tvOS 26.0, watchOS 26.0, *) else {
+                    throw LoomError.protocolError("Native QUIC requires OS 26.")
+                }
+                let conn = try makeNativeQUICConnection(
+                    to: target,
+                    enablePeerToPeer: enablePeerToPeer,
+                    requiredInterface: requiredInterface,
+                    requiredInterfaceType: requiredInterfaceType,
+                    requiredLocalPort: requiredLocalPort
+                )
+                let sess = LoomAuthenticatedSession(
+                    nativeQUICConnection: conn,
+                    role: .initiator,
+                    remoteEndpoint: target,
+                    serviceClass: configuration.directUDPServiceClass
+                )
+                await sess.setOnTrustPending(onTrustPending)
+                await sess.setOnBootstrapProgress(onBootstrapProgress)
+                _ = try await sess.start(
+                    localHello: hello,
+                    identityManager: identityManager,
+                    trustProvider: trustProvider,
+                    encryptionPolicy: encryptionPolicy,
+                    queue: queue
+                )
+                return sess
+            }
+
             let conn = try makeConnection(
                 to: target,
                 using: transportKind,
@@ -274,7 +331,7 @@ public final class LoomNode {
                 ports[.udp] = udpPort
             }
 
-            if configuration.enabledDirectTransports.contains(.quic) {
+            if configuration.enabledDirectTransports.contains(.quic), Self.nativeQUICAvailable {
                 let quicPort = try await startAuthenticatedDirectListener(
                     transportKind: .quic,
                     requestedPort: configuration.quicPort,
@@ -333,17 +390,60 @@ public final class LoomNode {
         helloProvider: @escaping @Sendable () async throws -> LoomSessionHelloRequest,
         onSession: @escaping @Sendable (LoomAuthenticatedSession) -> Void
     ) async throws -> UInt16 {
+        let directUDPServiceClass = configuration.directUDPServiceClass
+        if transportKind == .quic {
+            guard #available(macOS 26.0, iOS 26.0, visionOS 26.0, tvOS 26.0, watchOS 26.0, *) else {
+                throw LoomError.protocolError("Native QUIC listener requires OS 26.")
+            }
+            let listener = LoomNativeQUICDirectListener(
+                enablePeerToPeer: configuration.enablePeerToPeer,
+                quicALPN: configuration.quicALPN,
+                serviceClass: configuration.directUDPServiceClass
+            )
+            let port = try await listener.start(port: requestedPort) { [weak self] connection in
+                guard let self else { return }
+                let session = LoomAuthenticatedSession(
+                    nativeQUICConnection: connection,
+                    role: .receiver,
+                    remoteEndpoint: connection.remoteEndpoint,
+                    serviceClass: directUDPServiceClass
+                )
+                Task {
+                    do {
+                        let hello = try await helloProvider()
+                        _ = try await session.start(
+                            localHello: hello,
+                            identityManager: identityManager,
+                            trustProvider: self.trustProvider,
+                            encryptionPolicy: encryptionPolicy
+                        )
+                        onSession(session)
+                    } catch {
+                        LoomLogger.session(
+                            "Authenticated native QUIC listener session failed: \(error)"
+                        )
+                        await session.cancel()
+                    }
+                }
+            }
+            nativeQUICDirectListenerStorage = listener
+            directListenerPorts[transportKind] = port
+            return port
+        }
+
         let listener = LoomDirectListener(
             transportKind: transportKind,
             enablePeerToPeer: configuration.enablePeerToPeer,
-            quicALPN: transportKind == .quic ? configuration.quicALPN : []
+            quicALPN: transportKind == .quic ? configuration.quicALPN : [],
+            udpServiceClass: configuration.directUDPServiceClass
         )
         let port = try await listener.start(port: requestedPort) { [weak self] connection in
             guard let self else { return }
             let session = LoomAuthenticatedSession(
                 rawSession: LoomSession(connection: connection),
                 role: .receiver,
-                transportKind: transportKind
+                transportKind: transportKind,
+                serviceClass: transportKind == .udp ? directUDPServiceClass : nil
             )
             Task {
                 do {
@@ -414,6 +514,9 @@ public final class LoomNode {
             partialResult[transport.transportKind] = transport.pathKind
         }
         let directTransports: [LoomDirectTransportAdvertisement] = LoomTransportKind.allCases.compactMap { transportKind in
+            guard transportKind != .quic || Self.nativeQUICAvailable else {
+                return nil
+            }
             guard let port = ports[transportKind], port > 0 else {
                 return nil
             }
@@ -436,6 +539,13 @@ public final class LoomNode {
             directTransports: directTransports,
             metadata: base.metadata
         )
+    }
+
+    nonisolated public static var nativeQUICAvailable: Bool {
+        if #available(macOS 26.0, iOS 26.0, visionOS 26.0, tvOS 26.0, watchOS 26.0, *) {
+            return true
+        }
+        return false
     }
 }
 

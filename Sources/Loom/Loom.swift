@@ -13,7 +13,7 @@ package typealias StreamSessionID = UUID
 
 public enum Loom {
     public static let version = "1.8.15"
-    public static let protocolVersion: UInt8 = 2
+    public static let protocolVersion: UInt8 = 3
     /// Default Bonjour service type for peer discovery.
     ///
     /// Uses `_tcp` suffix despite actual sessions running over UDP because

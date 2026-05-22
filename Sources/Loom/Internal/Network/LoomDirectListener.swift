@@ -13,15 +13,18 @@ package actor LoomDirectListener {
     private let transportKind: LoomTransportKind
     private let enablePeerToPeer: Bool
     private let quicALPN: [String]
+    private let udpServiceClass: NWParameters.ServiceClass
 
     package init(
         transportKind: LoomTransportKind,
         enablePeerToPeer: Bool,
-        quicALPN: [String] = []
+        quicALPN: [String] = [],
+        udpServiceClass: NWParameters.ServiceClass = .interactiveVideo
     ) {
         self.transportKind = transportKind
         self.enablePeerToPeer = enablePeerToPeer
         self.quicALPN = quicALPN
+        self.udpServiceClass = udpServiceClass
     }
 
     package func start(
@@ -31,7 +34,8 @@ package actor LoomDirectListener {
         let parameters = try LoomTransportParametersFactory.makeParameters(
             for: transportKind,
             enablePeerToPeer: enablePeerToPeer,
-            quicALPN: quicALPN
+            quicALPN: quicALPN,
+            udpServiceClass: udpServiceClass
         )
         let actualPort: NWEndpoint.Port = port == 0 ? .any : NWEndpoint.Port(rawValue: port) ?? .any
         parameters.allowLocalEndpointReuse = true
@@ -73,7 +77,8 @@ package enum LoomTransportParametersFactory {
         enablePeerToPeer: Bool,
         requiredInterface: NWInterface? = nil,
         requiredInterfaceType: NWInterface.InterfaceType? = nil,
-        quicALPN: [String] = []
+        quicALPN: [String] = [],
+        udpServiceClass: NWParameters.ServiceClass = .interactiveVideo
     ) throws -> NWParameters {
         let parameters: NWParameters
         switch transportKind {
@@ -94,7 +99,7 @@ package enum LoomTransportParametersFactory {
         case .udp:
             parameters = NWParameters.udp
             parameters.includePeerToPeer = enablePeerToPeer
-            parameters.serviceClass = .signaling
+            parameters.serviceClass = udpServiceClass
         }
         if let requiredInterface {
             parameters.requiredInterface = requiredInterface

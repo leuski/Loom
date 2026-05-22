@@ -56,7 +56,7 @@ package final class LoomOrderedUnreliableSendQueue: @unchecked Sendable {
         return Limits(
             maxOutstandingPackets: recommendedLimits.maxOutstandingPackets,
             maxOutstandingBytes: recommendedLimits.maxOutstandingBytes,
-            maxQueuedPackets: profile == .priorityInputRealtimeSequenced ? 8 : nil,
+            maxQueuedPackets: recommendedLimits.maxQueuedPackets,
             replacesQueuedSends: profile == .priorityInputRealtime
         )
     }
