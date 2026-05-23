@@ -441,6 +441,7 @@ public actor LoomAuthenticatedSession: LoomSessionProtocol {
     private let recentlyClosedStreamMaxCount = 64
     private let transportEndpointDescription: String
     private let nativeQUICRemoteEndpoint: NWEndpoint?
+    private let nativeQUICPathSnapshotProvider: (@Sendable () -> LoomSessionNetworkPathSnapshot?)?
     private let transportServiceClassDescription: String?
     private let transportUsableDatagramSize: Int?
 
@@ -460,12 +461,11 @@ public actor LoomAuthenticatedSession: LoomSessionProtocol {
         case .udp:
             transport = LoomReliableChannel(connection: rawSession.connection)
         case .quic:
-            transport = LoomUnavailableSessionTransport(
-                message: "QUIC sessions require OS 26 native QUIC transport."
-            )
+            transport = LoomFramedConnection(connection: rawSession.connection)
         }
         transportEndpointDescription = rawSession.endpoint.debugDescription
         nativeQUICRemoteEndpoint = nil
+        nativeQUICPathSnapshotProvider = nil
         transportServiceClassDescription = serviceClass.map(Self.serviceClassDescription(_:))
         transportUsableDatagramSize = transportKind == .udp ? Loom.defaultMaxPacketSize : nil
         let (stream, continuation) = AsyncStream.makeStream(of: LoomMultiplexedStream.self)
@@ -491,6 +491,9 @@ public actor LoomAuthenticatedSession: LoomSessionProtocol {
         )
         transportEndpointDescription = (remoteEndpoint ?? nativeQUICConnection.remoteEndpoint)?.debugDescription ?? "native-quic"
         nativeQUICRemoteEndpoint = remoteEndpoint ?? nativeQUICConnection.remoteEndpoint
+        nativeQUICPathSnapshotProvider = {
+            nativeQUICConnection.currentPath.map(LoomSessionNetworkPathSnapshot.init(path:))
+        }
         transportServiceClassDescription = serviceClass.map(Self.serviceClassDescription(_:))
         transportUsableDatagramSize = LoomNativeQUICTransportFactory.defaultMaxDatagramFrameSize
         let (stream, continuation) = AsyncStream.makeStream(of: LoomMultiplexedStream.self)
@@ -1323,6 +1326,9 @@ public actor LoomAuthenticatedSession: LoomSessionProtocol {
         transportObserversConfigured = true
         guard let rawSession else {
             currentRemoteEndpoint = nativeQUICRemoteEndpoint
+            if let snapshot = nativeQUICPathSnapshotProvider?() {
+                applyTransportPathSnapshot(snapshot)
+            }
             return
         }
         currentRemoteEndpoint = rawSession.endpoint

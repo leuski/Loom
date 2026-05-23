@@ -38,7 +38,7 @@ struct LoomConnectionCoordinatorTests {
 
         let plan = try await coordinator.makePlan(localPeer: peer)
 
-        if LoomNode.nativeQUICAvailable {
+        if LoomNode.quicAvailable {
             #expect(plan.targets.map(\.transportKind) == [.quic, .tcp])
             #expect(plan.targets.first?.endpoint == .hostPort(host: "127.0.0.1", port: 5555))
             #expect(plan.targets.last?.endpoint == .hostPort(host: "127.0.0.1", port: 4444))
@@ -76,7 +76,7 @@ struct LoomConnectionCoordinatorTests {
 
         let plan = try await coordinator.makePlan(localPeer: peer)
 
-        if LoomNode.nativeQUICAvailable {
+        if LoomNode.quicAvailable {
             #expect(plan.targets.map(\.transportKind) == [.quic, .tcp])
             #expect(plan.targets.first?.endpoint == .hostPort(host: "127.0.0.1", port: 5555))
             #expect(plan.targets.last?.endpoint == .hostPort(host: "127.0.0.1", port: 4444))
@@ -115,7 +115,7 @@ struct LoomConnectionCoordinatorTests {
 
         let plan = try await coordinator.makePlan(localPeer: peer)
 
-        if LoomNode.nativeQUICAvailable {
+        if LoomNode.quicAvailable {
             #expect(plan.targets.map(\.endpoint) == [
                 .hostPort(host: "127.0.0.1", port: 7777),
                 .hostPort(host: "127.0.0.1", port: 6666),
@@ -185,7 +185,7 @@ struct LoomConnectionCoordinatorTests {
             )
 
             #expect(await session.transportKind == .tcp)
-            if LoomNode.nativeQUICAvailable {
+            if LoomNode.quicAvailable {
                 #expect(await attemptRecorder.attempts() == [.quic, .tcp])
             } else {
                 #expect(await attemptRecorder.attempts() == [.tcp])
@@ -229,7 +229,7 @@ struct LoomConnectionCoordinatorTests {
             localPeer: makeCoordinatorTestPeer()
         )
 
-        if LoomNode.nativeQUICAvailable {
+        if LoomNode.quicAvailable {
             #expect(await session.transportKind == .quic)
             #expect(await attemptRecorder.attempts() == [.quic])
         } else {
@@ -281,7 +281,7 @@ struct LoomConnectionCoordinatorTests {
             signalingSessionID: "relay-session"
         )
 
-        let expectedSources: [LoomConnectionTargetSource] = LoomNode.nativeQUICAvailable
+        let expectedSources: [LoomConnectionTargetSource] = LoomNode.quicAvailable
             ? [.localDiscovery, .localDiscovery, .overlayDirectory, .overlayDirectory, .remoteSignaling]
             : [.localDiscovery, .overlayDirectory, .remoteSignaling]
         #expect(plan.targets.map(\.source) == expectedSources)

@@ -60,7 +60,7 @@ struct LoomNodeAdvertisementTests {
             serviceName: "Mirage Host"
         )
 
-        let expectedTransports: Set<LoomTransportKind> = LoomNode.nativeQUICAvailable ? [.udp, .quic] : [.udp]
+        let expectedTransports: Set<LoomTransportKind> = LoomNode.quicAvailable ? [.udp, .quic] : [.udp]
         #expect(Set(initial.directTransports.map(\.transportKind)) == expectedTransports)
         #expect(initial.directTransports.contains { $0.transportKind == .tcp } == false)
     }
@@ -90,8 +90,8 @@ struct LoomNodeAdvertisementTests {
             serviceName: "Mirage Host"
         )
 
-        let expectedTransports: Set<LoomTransportKind> = LoomNode.nativeQUICAvailable ? [.tcp, .udp, .quic] : [.tcp, .udp]
-        let expectedQUICPort: UInt16? = LoomNode.nativeQUICAvailable ? 5678 : nil
+        let expectedTransports: Set<LoomTransportKind> = LoomNode.quicAvailable ? [.tcp, .udp, .quic] : [.tcp, .udp]
+        let expectedQUICPort: UInt16? = LoomNode.quicAvailable ? 5678 : nil
         #expect(Set(updated.directTransports.map(\.transportKind)) == expectedTransports)
         #expect(updated.directTransports.first { $0.transportKind == .udp }?.port == 1234)
         #expect(updated.directTransports.first { $0.transportKind == .quic }?.port == expectedQUICPort)

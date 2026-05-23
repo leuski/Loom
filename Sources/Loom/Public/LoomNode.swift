@@ -232,10 +232,8 @@ public final class LoomNode {
         let identityManager = self.identityManager ?? LoomIdentityManager.shared
 
         func attemptConnect(to target: NWEndpoint) async throws -> LoomAuthenticatedSession {
-            if transportKind == .quic {
-                guard #available(macOS 26.0, iOS 26.0, visionOS 26.0, tvOS 26.0, watchOS 26.0, *) else {
-                    throw LoomError.protocolError("Native QUIC requires OS 26.")
-                }
+            if transportKind == .quic,
+               #available(macOS 26.0, iOS 26.0, visionOS 26.0, tvOS 26.0, watchOS 26.0, *) {
                 let conn = try makeNativeQUICConnection(
                     to: target,
                     enablePeerToPeer: enablePeerToPeer,
@@ -331,7 +329,7 @@ public final class LoomNode {
                 ports[.udp] = udpPort
             }
 
-            if configuration.enabledDirectTransports.contains(.quic), Self.nativeQUICAvailable {
+            if configuration.enabledDirectTransports.contains(.quic), Self.quicAvailable {
                 let quicPort = try await startAuthenticatedDirectListener(
                     transportKind: .quic,
                     requestedPort: configuration.quicPort,
@@ -391,10 +389,8 @@ public final class LoomNode {
         onSession: @escaping @Sendable (LoomAuthenticatedSession) -> Void
     ) async throws -> UInt16 {
         let directUDPServiceClass = configuration.directUDPServiceClass
-        if transportKind == .quic {
-            guard #available(macOS 26.0, iOS 26.0, visionOS 26.0, tvOS 26.0, watchOS 26.0, *) else {
-                throw LoomError.protocolError("Native QUIC listener requires OS 26.")
-            }
+        if transportKind == .quic,
+           #available(macOS 26.0, iOS 26.0, visionOS 26.0, tvOS 26.0, watchOS 26.0, *) {
             let listener = LoomNativeQUICDirectListener(
                 enablePeerToPeer: configuration.enablePeerToPeer,
                 quicALPN: configuration.quicALPN,
@@ -514,7 +510,7 @@ public final class LoomNode {
             partialResult[transport.transportKind] = transport.pathKind
         }
         let directTransports: [LoomDirectTransportAdvertisement] = LoomTransportKind.allCases.compactMap { transportKind in
-            guard transportKind != .quic || Self.nativeQUICAvailable else {
+            guard transportKind != .quic || Self.quicAvailable else {
                 return nil
             }
             guard let port = ports[transportKind], port > 0 else {
@@ -546,6 +542,14 @@ public final class LoomNode {
             return true
         }
         return false
+    }
+
+    nonisolated public static var legacyQUICAvailable: Bool {
+        true
+    }
+
+    nonisolated public static var quicAvailable: Bool {
+        nativeQUICAvailable || legacyQUICAvailable
     }
 }
 

@@ -5,6 +5,7 @@
 //  Created by Ethan Lipnik on 5/21/26.
 //
 
+import Dispatch
 import Foundation
 import Network
 import Security
@@ -62,7 +63,7 @@ package enum LoomNativeQUICTransportFactory {
         serviceClass: NWParameters.ServiceClass,
         requiresLocalIdentity: Bool
     ) throws -> NWParametersBuilder<QUIC> {
-        let tlsIdentity = LoomNativeQUICTLSIdentity.makeIdentity()
+        let tlsIdentity = LoomQUICTLSConfiguration.makeIdentity(commonName: "Loom Native QUIC")
         if requiresLocalIdentity, tlsIdentity == nil {
             throw LoomNativeQUICTransportFactoryError.tlsIdentityUnavailable
         }
@@ -121,9 +122,29 @@ private enum LoomNativeQUICTransportFactoryError: Error, LocalizedError {
     }
 }
 
-@available(macOS 26.0, iOS 26.0, visionOS 26.0, tvOS 26.0, watchOS 26.0, *)
-private enum LoomNativeQUICTLSIdentity {
-    static func makeIdentity() -> sec_identity_t? {
+package enum LoomQUICTLSConfiguration {
+    package static func configure(
+        _ options: sec_protocol_options_t,
+        identity: sec_identity_t?,
+        logPrefix: String
+    ) {
+        sec_protocol_options_set_peer_authentication_required(options, false)
+        sec_protocol_options_set_verify_block(
+            options,
+            { _, _, complete in
+                complete(true)
+            },
+            DispatchQueue.global(qos: .userInitiated)
+        )
+
+        if let identity {
+            sec_protocol_options_set_local_identity(options, identity)
+        } else {
+            LoomLogger.transport("\(logPrefix) TLS identity unavailable; handshake may fail before Loom authentication")
+        }
+    }
+
+    package static func makeIdentity(commonName: String) -> sec_identity_t? {
         let keyAttributes: [String: Any] = [
             kSecAttrKeyType as String: kSecAttrKeyTypeECSECPrimeRandom,
             kSecAttrKeySizeInBits as String: 256,
@@ -138,6 +159,7 @@ private enum LoomNativeQUICTLSIdentity {
         }
 
         guard let certificateData = makeSelfSignedCertificateData(
+            commonName: commonName,
             publicKeyData: publicKeyData,
             privateKey: privateKey
         ), let certificate = SecCertificateCreateWithData(nil, certificateData as CFData),
@@ -150,6 +172,7 @@ private enum LoomNativeQUICTLSIdentity {
     }
 
     private static func makeSelfSignedCertificateData(
+        commonName: String,
         publicKeyData: Data,
         privateKey: SecKey
     ) -> Data? {
@@ -160,12 +183,12 @@ private enum LoomNativeQUICTLSIdentity {
         let tbsCertificate = sequence([
             integer(randomSerialBytes()),
             algorithm,
-            name(commonName: "Loom Native QUIC"),
+            name(commonName: commonName),
             sequence([
                 generalizedTime("20200101000000Z"),
                 generalizedTime("20491231235959Z"),
             ]),
-            name(commonName: "Loom Native QUIC"),
+            name(commonName: commonName),
             subjectPublicKeyInfo(publicKeyData: publicKeyData),
         ])
 

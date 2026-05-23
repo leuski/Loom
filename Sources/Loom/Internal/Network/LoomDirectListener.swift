@@ -94,6 +94,16 @@ package enum LoomTransportParametersFactory {
             let options = quicALPN.isEmpty
                 ? NWProtocolQUIC.Options()
                 : NWProtocolQUIC.Options(alpn: quicALPN)
+            options.idleTimeout = 30
+            options.initialMaxData = 8 * 1024 * 1024
+            options.initialMaxStreamDataBidirectionalLocal = 2 * 1024 * 1024
+            options.initialMaxStreamDataBidirectionalRemote = 2 * 1024 * 1024
+            options.initialMaxStreamsBidirectional = 4
+            LoomQUICTLSConfiguration.configure(
+                options.securityProtocolOptions,
+                identity: LoomQUICTLSConfiguration.makeIdentity(commonName: "Loom QUIC"),
+                logPrefix: "QUIC"
+            )
             parameters = NWParameters(quic: options)
             parameters.includePeerToPeer = enablePeerToPeer
         case .udp:

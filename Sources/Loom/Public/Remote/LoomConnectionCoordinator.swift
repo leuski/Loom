@@ -56,7 +56,7 @@ public enum LoomDirectCandidateCollector {
         let tcpPort = listeningPorts[.tcp] ?? configuration.controlPort
 
         if configuration.enabledDirectTransports.contains(.quic),
-           LoomNode.nativeQUICAvailable,
+           LoomNode.quicAvailable,
            quicPort > 0 {
             let quicProbe = await LoomSTUNProbe.run(localPort: quicPort)
             if quicProbe.reachable,
@@ -267,7 +267,7 @@ public final class LoomConnectionCoordinator {
         hostOverride: String?
     ) -> [LoomConnectionTarget] {
         let advertisedTransports = peer.advertisement.directTransports.filter { transport in
-            transport.transportKind != .quic || LoomNode.nativeQUICAvailable
+            transport.transportKind != .quic || LoomNode.quicAvailable
         }
         let transports = advertisedTransports.isEmpty
             ? [LoomDirectTransportAdvertisement(transportKind: .tcp, port: 0)]
