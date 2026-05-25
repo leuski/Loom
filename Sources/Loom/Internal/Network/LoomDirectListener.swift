@@ -88,7 +88,14 @@ package enum LoomTransportParametersFactory {
             if let tcpOptions = parameters.defaultProtocolStack.transportProtocol as? NWProtocolTCP.Options {
                 tcpOptions.noDelay = true
                 tcpOptions.enableKeepalive = true
-                tcpOptions.keepaliveInterval = 5
+                // Detect dead peers within ~25s of idle.
+                // macOS defaults are far too lenient for LAN P2P
+                // (keepaliveIdle defaults to 7200s = 2 hours), which
+                // leaves half-open sockets undetected effectively
+                // forever. Override all three to bound detection.
+                tcpOptions.keepaliveIdle = 10        // seconds of idle before first probe
+                tcpOptions.keepaliveInterval = 5     // seconds between probes
+                tcpOptions.keepaliveCount = 3        // probes before declaring dead
             }
         case .quic:
             let options = quicALPN.isEmpty
