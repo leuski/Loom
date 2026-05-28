@@ -7,7 +7,9 @@
 
 import CryptoKit
 import Foundation
+#if canImport(NIOSSH)
 import NIOSSH
+#endif
 
 /// SSH host-certificate trust failures.
 public enum LoomSSHServerTrustError: LocalizedError, Sendable, Equatable {
@@ -86,6 +88,7 @@ public struct LoomSSHValidatedHostCertificate: Sendable, Equatable {
     }
 }
 
+#if canImport(NIOSSH)
 /// Shared validator for OpenSSH host certificates used by Loom-managed SSH flows.
 public struct LoomSSHServerTrustValidator: Sendable {
     public let configuration: LoomSSHServerTrustConfiguration
@@ -212,3 +215,4 @@ public struct LoomSSHServerTrustValidator: Sendable {
         return "SHA256:\(fingerprint)"
     }
 }
+#endif

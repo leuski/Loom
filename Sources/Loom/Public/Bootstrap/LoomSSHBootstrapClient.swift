@@ -7,6 +7,7 @@
 //  SSH abstraction for authenticated bootstrap over SSH.
 //
 
+#if canImport(NIOSSH)
 import Foundation
 #if canImport(NIOConcurrencyHelpers) && canImport(NIOCore) && canImport(NIOPosix) && canImport(NIOSSH)
 import NIOConcurrencyHelpers
@@ -397,4 +398,5 @@ private final class SinglePasswordAuthenticationDelegate: NIOSSHClientUserAuthen
         }
     }
 }
+#endif
 #endif
